@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RH Bot — Minter &amp; X</title>
+<style>
+  /* --- Win95 palette --- */
+  :root{
+    --teal:#008080; --face:#c0c0c0; --white:#ffffff; --litegray:#dfdfdf;
+    --gray:#808080; --dark:#000000; --navy:#000080; --navy2:#1084d0;
+    --text:#000000; --green:#008000; --red:#800000;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--teal);
+    font-family:"MS Sans Serif","Segoe UI",Tahoma,sans-serif;
+    font-size:12px; color:var(--text);
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:24px 12px 60px; min-height:100%;
+  }
+  /* --- window chrome --- */
+  .window{
+    width:520px; max-width:100%;
+    background:var(--face);
+    border:2px solid;
+    border-color:var(--white) var(--dark) var(--dark) var(--white);
+    box-shadow:1px 1px 0 var(--gray);
+  }
+  .titlebar{
+    display:flex; align-items:center; gap:4px;
+    background:linear-gradient(90deg,var(--navy),var(--navy2));
+    color:#fff; padding:2px 3px; font-weight:bold;
+  }
+  .titlebar .ico{width:16px;height:16px;display:inline-block;text-align:center;line-height:16px;}
+  .titlebar .t{flex:1; padding-left:2px; letter-spacing:.2px;}
+  .tbtn{
+    width:18px;height:16px; background:var(--face);
+    border:2px solid; border-color:var(--white) var(--dark) var(--dark) var(--white);
+    color:#000; font:bold 10px/12px "MS Sans Serif",sans-serif;
+    display:flex;align-items:center;justify-content:center; cursor:default;
+  }
+  .menubar{display:flex; gap:12px; padding:3px 8px; border-bottom:1px solid var(--gray);}
+  .menubar span u{text-decoration:underline;}
+  .body{padding:10px;}
+  /* --- sunken group box --- */
+  fieldset{
+    border:2px groove var(--white);
+    margin:0 0 10px; padding:8px 10px 10px;
+  }
+  legend{padding:0 4px; font-weight:bold;}
+  .row{display:flex; justify-content:space-between; padding:2px 0; gap:8px;}
+  .row .k{color:#000;}
+  .row .v{font-weight:bold; text-align:right;}
+  .v.good{color:var(--green);} .v.bad{color:var(--red);} .v.warn{color:#806000;}
+  .mono{font-family:"Courier New",monospace;}
+  /* --- sunken panel (readouts / log) --- */
+  .sunken{
+    background:var(--white);
+    border:2px solid; border-color:var(--gray) var(--white) var(--white) var(--gray);
+    padding:6px;
+  }
+  #log{
+    height:150px; overflow:auto; background:#000; color:#00ff66;
+    font-family:"Courier New",monospace; font-size:11px; padding:6px; line-height:1.35;
+    border:2px solid; border-color:var(--gray) var(--white) var(--white) var(--gray);
+    white-space:pre-wrap;
+  }
+  #ab_log{
+    height:120px; overflow:auto; background:#000; color:#00ff66;
+    font-family:"Courier New",monospace; font-size:11px; padding:6px; line-height:1.35;
+    border:2px solid; border-color:var(--gray) var(--white) var(--white) var(--gray);
+    white-space:pre-wrap;
+    margin-top:6px;
+  }
+  /* --- buttons --- */
+  .btns{display:flex; gap:8px; margin-top:4px; flex-wrap:wrap;}
+  button.b{
+    min-width:96px; padding:5px 12px; background:var(--face); cursor:pointer;
+    border:2px solid; border-color:var(--white) var(--dark) var(--dark) var(--white);
+    font:12px "MS Sans Serif",sans-serif;
+  }
+  button.b:active{border-color:var(--dark) var(--white) var(--white) var(--dark);}
+  button.b:disabled{color:var(--gray); text-shadow:1px 1px 0 var(--white); cursor:default;}
+  button.b.primary{font-weight:bold;}
+  .statusbar{
+    display:flex; gap:6px; margin-top:8px;
+  }
+  .statusbar .cell{
+    flex:1; padding:2px 6px;
+    border:2px solid; border-color:var(--gray) var(--white) var(--white) var(--gray);
+    background:var(--face);
+  }
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--gray);margin-right:4px;vertical-align:middle;}
+  .dot.on{background:#00c000;} .dot.off{background:#c00000;}
+  .note{font-size:11px; color:#000; margin-top:6px; line-height:1.4;}
+  .hr{height:2px;border:none;border-top:1px solid var(--gray);border-bottom:1px solid var(--white);margin:8px 0;}
+  a{color:var(--navy);}
+  .txt{width:100%; padding:4px 6px; font-family:"Courier New",monospace; font-size:11px;
+    border:2px solid; border-color:var(--gray) var(--white) var(--white) var(--gray); background:var(--white);}
+  .txtsm{width:70px; padding:2px 4px; font-family:"Courier New",monospace;
+    border:2px solid; border-color:var(--gray) var(--white) var(--white) var(--gray); background:var(--white);}
+  .lbl{display:block; margin:4px 0 2px; font-weight:bold;}
+  /* --- tab strip (Win95-style) --- */
+  .tabbar{
+    display:flex; gap:4px; padding:8px 10px 0; background:var(--face);
+    border-bottom:1px solid var(--gray);
+  }
+  .tabbar button.tab{
+    min-width:0; padding:4px 14px 5px; margin:0;
+    background:var(--face); cursor:pointer; font:12px "MS Sans Serif",sans-serif;
+    border:2px solid; border-color:var(--white) var(--dark) var(--dark) var(--white);
+    border-bottom:none; position:relative; top:1px;
+  }
+  .tabbar button.tab.active{
+    background:var(--face); font-weight:bold;
+    border-bottom:2px solid var(--face); z-index:1;
+  }
+  .tabpanel{display:none;}
+  .tabpanel.active{display:block;}
+</style>
+</head>
+<body>
+  <div class="window" role="application" aria-label="RH Bot">
+    <div class="titlebar">
+      <span class="ico">◆</span>
+      <span class="t" id="wintitle">RH Bot — Robinhood Chain</span>
+      <div class="tbtn" title="Minimize">_</div>
+      <div class="tbtn" title="Maximize">□</div>
+      <div class="tbtn" title="Close">×</div>
+    </div>
+    <div class="tabbar">
+      <button type="button" class="tab active" id="tabbtn-mint" data-tab="mint">NFT Minter</button>
+      <button type="button" class="tab" id="tabbtn-x" data-tab="x">X Scraper</button>
+    </div>
+    <div class="body">
+
+      <div id="tab-mint" class="tabpanel active">
+
+      <fieldset>
+        <legend>Load contract</legend>
+        <div class="row"><span class="k">Contract address</span></div>
+        <input id="addr" class="txt" placeholder="0x... collection contract" />
+        <div class="row" style="margin-top:6px;"><span class="k">Known mint tx hash (optional, helps detect)</span></div>
+        <input id="txh" class="txt" placeholder="0x... a tx where someone minted this" />
+        <div class="btns" style="margin-top:6px;">
+          <button class="b" id="detect">Detect from tx</button>
+          <span id="detectmsg" class="note" style="margin:0;align-self:center;"></span>
+        </div>
+        <hr class="hr">
+        <div class="row"><span class="k">Or enter the mint function yourself</span></div>
+        <input id="sig" class="txt" placeholder="e.g. mint(uint256)  or  mintTo(address,uint256)" />
+        <div class="btns" style="margin-top:6px;">
+          <button class="b" id="usesig">Use this function</button>
+          <span id="sigmsg" class="note" style="margin:0;align-self:center;"></span>
+        </div>
+        <div class="row" style="margin-top:6px;"><span class="k">Active mode</span><span class="v" id="mode">—</span></div>
+        <div class="row"><span class="k">Detected pattern</span><span class="v" id="pattern">—</span></div>
+        <div class="row"><span class="k">Quantity</span><span class="v"><input id="qty" class="txtsm" value="1"/></span></div>
+        <div class="row" id="pricerow" style="display:none;"><span class="k">Price/token ETH (manual patterns only)</span><span class="v"><input id="priceman" class="txtsm" value="0"/></span></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Cost &amp; limits</legend>
+        <div class="row"><span class="k">Max gas spend (USD)</span><span class="v"><input id="gasusd" class="txtsm" value="15"/></span></div>
+        <div class="row"><span class="k">Price / token</span><span class="v" id="priceshown">—</span></div>
+        <div class="row"><span class="k">Mint cost (price × qty)</span><span class="v" id="mintcost">—</span></div>
+        <div class="row"><span class="k">Est. worst-case total</span><span class="v" id="totalcost">—</span></div>
+        <div class="btns" style="margin-top:6px;">
+          <button class="b" id="applylimits">Apply</button>
+          <span id="gasmsg" class="note" style="margin:0;align-self:center;"></span>
+          <span class="note" style="margin:0;align-self:center;">Gas cap = max USD spend on gas (not priority on RH chain).</span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Connection</legend>
+        <div class="row"><span class="k">Network</span><span class="v" id="net">…</span></div>
+        <div class="row"><span class="k">Wallet</span><span class="v mono" id="wallet">…</span></div>
+        <div class="row"><span class="k">Balance</span><span class="v" id="bal">…</span></div>
+        <div class="row"><span class="k">Private key loaded</span><span class="v" id="haskey">…</span></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Mint status (from contract)</legend>
+        <div class="row"><span class="k">Contract</span><span class="v mono" id="loadedaddr">—</span></div>
+        <div class="row"><span class="k">Minted so far</span><span class="v" id="minted">—</span></div>
+        <div class="row"><span class="k">Max supply</span><span class="v" id="maxsup">—</span></div>
+        <div class="row"><span class="k">You minted</span><span class="v" id="youminted">—</span></div>
+        <div class="row"><span class="k">Allowlist-gated</span><span class="v" id="gated">—</span></div>
+        <div id="notes" class="note" style="margin-top:4px;"></div>
+      </fieldset>
+
+      <div class="btns">
+        <button class="b" id="refresh">Refresh</button>
+        <button class="b" id="dryrun">Dry run</button>
+        <button class="b primary" id="mint">MINT</button>
+      </div>
+
+      <hr class="hr">
+      <div class="sunken" style="padding:0;">
+        <div id="log">Ready. Click Refresh to read the chain.</div>
+      </div>
+
+      <div class="statusbar">
+        <div class="cell"><span class="dot" id="dot"></span><span id="statustext">Idle</span></div>
+        <div class="cell" id="txcell">tx: —</div>
+      </div>
+
+      <p class="note">
+        Ordering on Robinhood Chain is first-come-first-served — gas does not buy priority.
+        Run this near the Ohio sequencer for lowest latency. Your key stays in .env on this
+        machine and never reaches the browser.
+      </p>
+
+      </div><!-- /tab-mint -->
+
+      <div id="tab-x" class="tabpanel">
+
+      <fieldset>
+        <legend>Auto-buy from X (LIVE — funds at risk)</legend>
+
+        <label class="lbl">Watch X handles (comma separated, no @)</label>
+        <input id="ab_handles" class="txt" placeholder="clockincoin" value="clockincoin">
+
+        <div class="row"><span class="k">Spend per buy (ETH)</span>
+          <input id="ab_spend" class="txtsm" placeholder="0.01" value="0.01"></div>
+        <div class="row"><span class="k">Slippage tolerance %</span>
+          <input id="ab_tol" class="txtsm" placeholder="15" value="15"></div>
+
+        <div class="row"><span class="k">Watching</span><span class="v good" id="ab_watching">—</span></div>
+        <div class="row"><span class="k">Wallet</span><span class="v mono" id="ab_wallet">—</span></div>
+        <div class="row"><span class="k">Balance</span><span class="v" id="ab_balance">—</span></div>
+        <div class="row"><span class="k">Quoter configured</span><span class="v" id="ab_quoter">—</span></div>
+        <div class="row"><span class="k">Status</span><span class="v" id="ab_status">stopped</span></div>
+        <div class="row"><span class="k">Total spent</span><span class="v" id="ab_spent">—</span></div>
+
+        <div class="btns" style="margin-top:6px;">
+          <button class="b" id="ab_save">Save settings</button>
+          <button class="b primary" id="ab_start">Start watching</button>
+          <button class="b" id="ab_stop">Stop</button>
+        </div>
+        <div id="ab_err" class="note" style="margin-top:4px;color:#800;"></div>
+
+        <label class="lbl" style="margin-top:8px;">Auto-buy log</label>
+        <div class="sunken" style="padding:0;">
+          <div id="ab_log">Not started.</div>
+        </div>
+
+        <p class="note">
+          Polls every 30s (set AUTO_POLL_SEC in .env to change). Faster = more 429 rate limits from X.
+        </p>
+      </fieldset>
+
+      </div><!-- /tab-x -->
+
+    </div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const setV = (id,val,cls)=>{const el=$(id); if(!el)return; el.textContent=val; el.className='v'+(cls?(' '+cls):'');};
+const TOKEN = new URLSearchParams(location.search).get('token')||'';
+const wt = u => TOKEN ? (u+(u.includes('?')?'&':'?')+'token='+encodeURIComponent(TOKEN)) : u;
+// Don't let the 4s poll stomp gas/qty while the user is editing.
+let gasDirty = false;
+let qtyDirty = false;
+async function getJSON(u,opt){const r=await fetch(wt(u),opt);return r.json();}
+async function post(u,obj){return getJSON(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj||{})});}
+
+/** Win95-style tab switch — remembers last tab in sessionStorage. */
+let activeTab = sessionStorage.getItem('rhtab') || 'mint';
+function showTab(name){
+  activeTab = name;
+  sessionStorage.setItem('rhtab', name);
+  document.querySelectorAll('.tabpanel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tabbar .tab').forEach(b => b.classList.remove('active'));
+  const panel = $('tab-'+name);
+  const btn = $('tabbtn-'+name);
+  if (panel) panel.classList.add('active');
+  if (btn) btn.classList.add('active');
+  const titles = { mint: 'RH Bot — NFT Minter', x: 'RH Bot — X Scraper' };
+  const titleEl = $('wintitle');
+  if (titleEl) titleEl.textContent = titles[name] || 'RH Bot — Robinhood Chain';
+  if (name === 'mint') refresh();
+  if (name === 'x' && typeof window.abRefresh === 'function') window.abRefresh();
+}
+document.querySelectorAll('.tabbar .tab').forEach(btn => {
+  btn.onclick = () => showTab(btn.dataset.tab);
+});
+showTab(activeTab);
+
+async function detect(){
+  const address=$('addr').value.trim(), txHash=$('txh').value.trim();
+  if(!address && !txHash){ $('detectmsg').textContent='Enter an address or a mint tx hash.'; return; }
+  $('detectmsg').textContent='Detecting…'; setButtons(false);
+  const r=await post('/api/detect',{address,txHash});
+  if(r.patternId){
+    $('detectmsg').textContent='Loaded ('+r.via+').';
+    setV('pattern', r.label||r.patternId,'good');
+    if(r.address) $('addr').value=r.address;
+    const manual = r.patternId!=='thirdweb-drop' && r.patternId!=='seadrop';
+    $('pricerow').style.display = manual?'flex':'none';
+    await post('/api/session',{ useManual:false });
+    await syncSession();
+  } else {
+    $('detectmsg').textContent = r.error||'Could not detect.';
+    setV('pattern','not identified','bad');
+  }
+  setButtons(true); refresh();
+}
+
+async function useSig(){
+  const sig=$('sig').value.trim();
+  const address=$('addr').value.trim();
+  if(!address){ $('sigmsg').textContent='Paste the NFT contract address first.'; return; }
+  if(!sig){ $('sigmsg').textContent='Type a function signature first.'; return; }
+  const v=await post('/api/validate-sig',{sig});
+  if(!v.ok){ $('sigmsg').textContent=v.error; setV('pattern','—'); setV('mode','—'); return; }
+  $('sigmsg').textContent='OK: '+v.fn+'('+v.inputs.join(', ')+')';
+  $('pricerow').style.display='flex';
+  await post('/api/session',{ manualSig:sig, useManual:true, address, patternId:null });
+  await syncSession();
+  setV('mode','MANUAL signature','good');
+  setV('pattern','MANUAL: '+v.fn,'good');
+  $('detectmsg').textContent='';
+  refresh();
+}
+
+async function syncSession(){
+  await post('/api/session',{ address:$('addr').value.trim(), qty:$('qty').value||'1',
+    priceEth:$('priceman')?$('priceman').value:'0', maxGasUsd:$('gasusd')?$('gasusd').value:'15' });
+}
+
+function fmtSec(s){ if(s==null)return'—'; const n=s<0; s=Math.abs(s);
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;
+  const str=(h?h+'h ':'')+(m?m+'m ':'')+x+'s'; return n?('was '+str+' ago'):('in '+str); }
+
+async function refresh(){
+  try{
+    const s=await getJSON('/api/status');
+    setV('net', s.connected?('chainId '+s.chainId):'DISCONNECTED', s.connected?'good':'bad');
+    setV('wallet', s.wallet?(s.wallet.slice(0,6)+'…'+s.wallet.slice(-4)):'—');
+    setV('bal', s.balanceEth!=null?Number(s.balanceEth).toFixed(5)+' ETH':'—');
+    setV('haskey', s.hasKey?'Yes':'NO — set PRIVATE_KEY', s.hasKey?'good':'bad');
+    setV('pattern', s.patternLabel||'—', s.patternLabel?'good':'');
+    setV('mode', s.mode==='manual'?'MANUAL signature':(s.mode?'auto pattern':'—'), s.mode?'good':'');
+    setV('loadedaddr', s.address?(s.address.slice(0,10)+'…'):'—');
+    const mintedN = s.minted!=null ? Number(s.minted) : null;
+    const maxN = s.maxSupply!=null ? Number(s.maxSupply) : null;
+    let mintedTxt = s.minted??'—';
+    if (mintedN!=null && maxN!=null) {
+      mintedTxt = mintedN+' / '+maxN+(mintedN>=maxN?' (SOLD OUT)':'');
+      setV('minted', mintedTxt, mintedN>=maxN?'bad':'good');
+    } else setV('minted', mintedTxt);
+    setV('maxsup', s.maxSupply??'—');
+    setV('youminted', s.youMinted??'—');
+    // price: on-chain (thirdweb) is authoritative; manual uses your input
+    const shownPrice = s.onchainPriceEth!=null ? (Number(s.onchainPriceEth)+' ETH (on-chain)')
+                      : (s.mode==='manual' ? (Number(s.priceEth||0)+' ETH (yours)') : '—');
+    setV('priceshown', shownPrice);
+    const qtyN = Number(s.qty||1);
+    const perToken = s.onchainPriceEth!=null ? Number(s.onchainPriceEth) : Number(s.priceEth||0);
+    const mintCost = perToken*qtyN;
+    setV('mintcost', s.valueEth!=null ? (Number(s.valueEth)+' ETH') : (mintCost+' ETH'));
+    // worst-case total = mint cost + gas cap (in ETH, approx via ETH_USD unknown here -> show both)
+    setV('totalcost', (s.valueEth!=null?Number(s.valueEth):mintCost)+' ETH mint + up to $'+(s.maxGasUsd||'?')+' gas');
+    if($('gasusd') && !gasDirty && document.activeElement!==$('gasusd') && s.maxGasUsd!=null) $('gasusd').value=s.maxGasUsd;
+    if($('qty') && !qtyDirty && document.activeElement!==$('qty') && s.qty!=null) $('qty').value=s.qty;
+    setV('gated', s.gated==null?'—':(s.gated?'YES — needs proof':'NO — public'),
+         s.gated===true?'bad':(s.gated===false?'good':''));
+    $('notes').innerHTML = (s.notes||[]).map(n=>'• '+n).join('<br>') +
+      (s.buildError?('<br>⚠ '+s.buildError):'') + (s.error?('<br>'+s.error):'');
+  }catch(e){ appendLog('refresh failed: '+e.message); }
+}
+
+let poll=null;
+function startPolling(){ if(poll)return;
+  poll=setInterval(async()=>{ const st=await getJSON('/api/log');
+    $('log').textContent=st.log.join('\n')||'Running…'; $('log').scrollTop=$('log').scrollHeight;
+    $('dot').className='dot '+(st.running?'on':(st.ok===true?'on':(st.ok===false?'off':'')));
+    $('statustext').textContent=st.running?'Running…':(st.done?(st.ok?'Success':'Failed'):'Idle');
+    $('txcell').textContent=st.txHash?('tx: '+st.txHash.slice(0,12)+'…'):'tx: —';
+    if(st.done){ clearInterval(poll); poll=null; setButtons(true); refresh(); }
+  },500);
+}
+function appendLog(m){ $('log').textContent+='\n'+m; $('log').scrollTop=$('log').scrollHeight; }
+function setButtons(on){ ['detect','refresh','dryrun','mint'].forEach(id=>{const e=$(id); if(e)e.disabled=!on;}); }
+
+$('detect').onclick=detect;
+$('usesig').onclick=useSig;
+$('applylimits').onclick=async()=>{
+  await syncSession();
+  gasDirty=false; qtyDirty=false;
+  $('gasmsg').textContent='Saved gas cap $'+($('gasusd').value||'?');
+  refresh();
+};
+$('refresh').onclick=async()=>{ await syncSession(); gasDirty=false; qtyDirty=false; refresh(); };
+$('qty').oninput=()=>{ qtyDirty=true; };
+$('qty').onchange=syncSession;
+if($('priceman')) $('priceman').onchange=syncSession;
+if($('gasusd')) $('gasusd').oninput=()=>{ gasDirty=true; $('gasmsg').textContent=''; };
+$('dryrun').onclick=async()=>{ await syncSession(); setButtons(false); $('log').textContent='Starting dry run…'; await post('/api/dryrun'); startPolling(); };
+$('mint').onclick=async()=>{ if(!confirm('Send a REAL mint transaction?\nThis spends ETH from the wallet in .env. Continue?'))return;
+  await syncSession(); setButtons(false); $('log').textContent='Arming minter…'; await post('/api/mint'); startPolling(); };
+
+refresh();
+setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
+
+(function () {
+  const ab$ = (id) => document.getElementById(id);
+
+  async function abGet(path) {
+    const r = await fetch(wt(path));
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' — open http://localhost:4666 (not the file directly)');
+    return r.json();
+  }
+  async function abPost(path, body) {
+    const r = await fetch(wt(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+
+  function fillSettings(s) {
+    const active = document.activeElement?.id || '';
+    if (active !== 'ab_handles') ab$('ab_handles').value = (s.handles || []).join(', ');
+    if (active !== 'ab_spend') ab$('ab_spend').value = s.maxSpendEth || '';
+    if (active !== 'ab_tol') ab$('ab_tol').value = s.slippageTolerancePct || '';
+  }
+
+  async function abRefresh() {
+    try {
+      const st = await abGet('/api/auto/status');
+      ab$('ab_err').textContent = '';
+      fillSettings(st.settings || {});
+      const handles = (st.settings?.handles || []).map((h) => '@' + String(h).replace(/^@/, ''));
+      ab$('ab_watching').textContent = st.watching && handles.length
+        ? handles.join(', ')
+        : (handles.length ? handles.join(', ') + ' (stopped)' : '—');
+      ab$('ab_wallet').textContent = st.wallet
+        ? (st.wallet.slice(0, 6) + '…' + st.wallet.slice(-4))
+        : 'NO PRIVATE_KEY in .env';
+      ab$('ab_wallet').className = 'v mono' + (st.wallet ? ' good' : ' bad');
+      ab$('ab_balance').textContent = st.balanceEth != null ? st.balanceEth.toFixed(5) + ' ETH' : '—';
+      ab$('ab_quoter').textContent = st.quoterSet ? 'yes' : 'NO — set V4_QUOTER in .env';
+      ab$('ab_quoter').className = 'v' + (st.quoterSet ? ' good' : ' bad');
+      ab$('ab_status').textContent = st.watching ? 'WATCHING — LIVE' : 'stopped';
+      ab$('ab_status').className = 'v' + (st.watching ? ' good' : '');
+      ab$('ab_spent').textContent = (st.totalSpentEth || 0).toFixed(5) + ' ETH';
+      const logEl = ab$('ab_log');
+      if (logEl) {
+        logEl.textContent = (st.log && st.log.length) ? st.log.join('\n') : 'Waiting for activity…';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+    } catch (e) {
+      ab$('ab_err').textContent = 'Cannot reach server — run: bun src/server.js then open http://localhost:4666';
+      ab$('ab_status').textContent = 'offline';
+      ab$('ab_status').className = 'v bad';
+      const logEl = ab$('ab_log');
+      if (logEl) logEl.textContent = 'Server not connected.\n' + e.message;
+    }
+  }
+
+  function collect() {
+    return {
+      enabled: true,
+      handles: ab$('ab_handles').value.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean),
+      maxSpendEth: ab$('ab_spend').value.trim(),
+      slippageTolerancePct: ab$('ab_tol').value.trim(),
+    };
+  }
+
+  ab$('ab_save').onclick = async () => {
+    const res = await abPost('/api/auto/settings', collect());
+    ab$('ab_err').textContent = (res.errors || []).join(' · ');
+    abRefresh();
+  };
+
+  ab$('ab_start').onclick = async () => {
+    try {
+      ab$('ab_log').textContent = 'Starting…';
+      const settingsRes = await abPost('/api/auto/settings', collect());
+      if (settingsRes.errors?.length) {
+        ab$('ab_err').textContent = settingsRes.errors.join(' · ');
+        abRefresh();
+        return;
+      }
+      const res = await abPost('/api/auto/start', {});
+      ab$('ab_err').textContent = res.ok ? '' : (res.errors || [res.error]).join(' · ');
+      abRefresh();
+    } catch (e) {
+      ab$('ab_err').textContent = e.message;
+      ab$('ab_log').textContent = 'Start failed: ' + e.message;
+    }
+  };
+
+  ab$('ab_stop').onclick = async () => { await abPost('/api/auto/stop', {}); abRefresh(); };
+
+  window.abRefresh = abRefresh;
+  setInterval(() => { if (activeTab === 'x') abRefresh(); }, 2000);
+  if (activeTab === 'x') abRefresh();
+})();
+</script>
+</body>
+</html>

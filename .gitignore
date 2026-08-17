@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+cookies.json
+autobuy-state.json
+autobuy-state.json.tmp

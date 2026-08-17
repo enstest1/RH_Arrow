@@ -1,0 +1,21 @@
+{
+  "name": "rh-minter",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Minimal contract minting bot for Robinhood Chain (Arbitrum L2, EVM-compatible)",
+  "scripts": {
+    "inspect": "node src/inspect.js",
+    "dryrun": "node src/mint.js --dry-run",
+    "mint": "node src/mint.js",
+    "ui": "bun src/server.js",
+    "start": "bun src/server.js",
+    "ui:node": "node src/server.js",
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.2",
+    "goat-x-pro": "^0.1.1",
+    "x-client-transaction-id": "^0.3.1"
+  }
+}
