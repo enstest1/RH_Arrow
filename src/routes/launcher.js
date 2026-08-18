@@ -1,9 +1,9 @@
 /**
- * launcher.js — Stonk-style launch contract adapter (detection stub).
+ * launcher.js — launch-contract detection only.
  *
- * BUY EXECUTION NOT IMPLEMENTED: launcher payable buy ABI is not verified.
- * STRIKE launch selector 0x70fb7e8a observed on 0xc6cc8979… but not decoded to
- * a safe encoder. Fail closed — report launch_tax_too_high / launcher_unverified.
+ * STRIKE launcher 0xc6cc8979… has no historical buy txs (create selector
+ * 0x70fb7e8a, value=0). First STRIKE buy used SigmaSwap, not this contract.
+ * Do not invent a buy ABI.
  */
 import { STRIKE_LAUNCHER } from './constants.js';
 

@@ -1,9 +1,13 @@
 /**
  * aggregator.js — Robinhood routing proxy (0x65050…) swap adapter.
  *
- * Verified: selector 0x4d819a2a, SwapDesc tuple, swapType 1/2/12 via tx
- * 0x72c33c3048163beacde5f4ef5b1955d8e392019436e7ececdac0473c5441676d
- * and eth_call simulation for MANCER (type 1) + STRIKE 2-hop (1+12).
+ * Verified 2026-08-17 and re-checked 2026-08-18:
+ *   EIP-1967 impl 0xb70DA7425Bc26A6aFd60d080148248389a9073bF
+ *   selector 0x4d819a2a
+ *   ETH-in: msg.value === amountIn, feeToken = address(0)
+ *   swapType 1 (V3) and 12 (Up CL) only — other types fail-closed
+ *   feeRate() returns 100. Unit proven as bps: impl bytecode does
+ *   amount * 0x64 / 0x2710, and ETH-in tx 0x9e08e895 withheld 1%.
  */
 import { ethers } from 'ethers';
 import {
@@ -14,15 +18,21 @@ import {
   AGGREGATOR_SWAP_ABI,
   EIP1967_IMPL_SLOT,
   ZERO_ADDRESS,
+  VERIFIED_SWAP_TYPES,
+  FEE_RATE_ABI,
 } from './constants.js';
 import { auditEvent } from '../auditlog.js';
 
-/** @type {{ proxy: string, implementation: string | null, validated: boolean, feeBps: number, feeCollector: string, checkedAt: number | null }} */
+/** @type {{ proxy: string, implementation: string | null, expectedImplementation: string, validated: boolean, feeBps: number, feeRateRaw: number, feeSource: string, feeUnit: string, feeCollector: string, checkedAt: number | null }} */
 export const aggState = {
   proxy: AGGREGATOR_PROXY,
   implementation: null,
+  expectedImplementation: AGGREGATOR_EXPECTED_IMPL,
   validated: false,
   feeBps: AGGREGATOR_DEFAULT_FEE_BPS,
+  feeRateRaw: AGGREGATOR_DEFAULT_FEE_BPS,
+  feeSource: 'observed-default',
+  feeUnit: 'unverified',
   feeCollector: AGGREGATOR_FEE_COLLECTOR,
   checkedAt: null,
 };
@@ -50,26 +60,52 @@ export async function initAggregator(provider) {
   }
 
   aggState.implementation = impl;
+  aggState.expectedImplementation = AGGREGATOR_EXPECTED_IMPL;
   aggState.checkedAt = Date.now();
   const expected = AGGREGATOR_EXPECTED_IMPL;
   aggState.validated = impl === expected;
 
   if (!aggState.validated) {
-    auditEvent('implementation_changed', { expected, actual: impl });
-    console.log('[AGG] IMPLEMENTATION CHANGED expected=' + expected + ' actual=' + impl);
-    console.log('[AGG] aggregator execution DISABLED until validated');
+    auditEvent('aggregator_impl_mismatch', { expected, actual: impl });
+    console.log('[AGG] implementation mismatch expected=' + expected + ' actual=' + impl);
+    console.log('[AGG] aggregator execution DISABLED — V4 remains available');
   } else {
-    console.log('[AGG] proxy ' + AGGREGATOR_PROXY);
-    console.log('[AGG] implementation ' + impl);
-    console.log('[AGG] implementation validated');
+    const code = await provider.getCode(impl).catch(() => '0x');
+    if (!code || code === '0x') {
+      aggState.validated = false;
+      auditEvent('aggregator_impl_mismatch', { expected, actual: impl, reason: 'no_bytecode' });
+      console.log('[AGG] implementation has no bytecode — aggregator DISABLED');
+    } else {
+      console.log('[AGG] proxy ' + AGGREGATOR_PROXY);
+      console.log('[AGG] implementation ' + impl);
+      console.log('[AGG] implementation validated');
+    }
   }
 
-  // Fee: attempt on-chain read; fall back to observed default (1%).
   aggState.feeBps = AGGREGATOR_DEFAULT_FEE_BPS;
-  console.log('[AGG] effective fee ~' + (aggState.feeBps / 100).toFixed(2) + '%');
-  console.log('[AGG] fee collector ' + AGGREGATOR_FEE_COLLECTOR);
+  aggState.feeRateRaw = AGGREGATOR_DEFAULT_FEE_BPS;
+  aggState.feeSource = 'observed-default';
+  aggState.feeUnit = 'unverified';
+  try {
+    const feeC = new ethers.Contract(AGGREGATOR_PROXY, FEE_RATE_ABI, provider);
+    const rate = await feeC.feeRate();
+    if (rate != null) {
+      const raw = Number(rate);
+      aggState.feeRateRaw = raw;
+      aggState.feeBps = raw;
+      aggState.feeSource = 'contract-reported';
+      // 100-as-bps proven on expected impl (bytecode 100/10000 + tx 0x9e08e895).
+      aggState.feeUnit = (aggState.validated && raw === 100) ? 'verified-bps' : 'unverified';
+    }
+  } catch {
+    /* no getter — keep observed default */
+  }
+  console.log('[AGG] feeRateRaw ' + aggState.feeRateRaw + ' unit=' + aggState.feeUnit + ' (' + aggState.feeSource + ') collector ' + AGGREGATOR_FEE_COLLECTOR);
   auditEvent('aggregator_fee_checked', {
+    feeRateRaw: aggState.feeRateRaw,
     feeBps: aggState.feeBps,
+    feeSource: aggState.feeSource,
+    feeUnit: aggState.feeUnit,
     feeCollector: AGGREGATOR_FEE_COLLECTOR,
     validated: aggState.validated,
   });
@@ -83,6 +119,20 @@ export function isAggregatorEnabled() {
 
 export function getAggregatorStatus() {
   return { ...aggState, enabled: isAggregatorEnabled() };
+}
+
+/**
+ * Reject unverified swapType values fail-closed.
+ * @param {object[]} descriptors
+ */
+export function assertVerifiedSwapTypes(descriptors) {
+  for (const d of descriptors || []) {
+    if (!VERIFIED_SWAP_TYPES[d.swapType]) {
+      const err = new Error('unsupported_swap_type:' + d.swapType);
+      err.reason = 'unsupported_swap_type';
+      throw err;
+    }
+  }
 }
 
 /**
@@ -109,9 +159,52 @@ export function buildSwapDesc(d) {
  * @param {{ descriptors: object[], amountIn: bigint, minReturn: bigint, deadline: number }} p
  */
 export function encodeAggregatorSwap({ descriptors, amountIn, minReturn, deadline }) {
+  assertVerifiedSwapTypes(descriptors);
   const iface = new ethers.Interface(AGGREGATOR_SWAP_ABI);
   const descs = descriptors.map(buildSwapDesc);
   return iface.encodeFunctionData('swap', [descs, ZERO_ADDRESS, amountIn, minReturn, BigInt(deadline)]);
+}
+
+/**
+ * Decode aggregator swap() calldata into the same shape used by fixtures.
+ * Does not assert verified types — historical txs may include 2/27.
+ * @param {string} data
+ * @returns {{ selector: string, feeToken: string, amountIn: string, minReturn: string, deadline: string, descriptors: object[] }}
+ */
+export function decodeAggregatorSwap(data) {
+  const hex = String(data || '');
+  const iface = new ethers.Interface(AGGREGATOR_SWAP_ABI);
+  const decoded = iface.decodeFunctionData('swap', hex);
+  const descriptors = [...decoded[0]].map((d) => ({
+    swapType: Number(d.swapType),
+    tokenIn: String(d.tokenIn).toLowerCase(),
+    tokenOut: String(d.tokenOut).toLowerCase(),
+    poolAddress: String(d.poolAddress).toLowerCase(),
+    fee: Number(d.fee),
+    tickSpacing: Number(d.tickSpacing),
+    hooks: String(d.hooks).toLowerCase(),
+    hookData: d.hookData,
+    poolManager: String(d.poolManager).toLowerCase(),
+    parameters: d.parameters,
+  }));
+  return {
+    selector: hex.slice(0, 10).toLowerCase(),
+    feeToken: String(decoded[1]).toLowerCase(),
+    amountIn: decoded[2].toString(),
+    minReturn: decoded[3].toString(),
+    deadline: decoded[4].toString(),
+    descriptors,
+  };
+}
+
+function decodeCallAmount(ret) {
+  if (!ret || ret === '0x' || ret.length < 66) return null;
+  try {
+    const v = BigInt(ret);
+    return v > 0n ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -120,31 +213,43 @@ export function encodeAggregatorSwap({ descriptors, amountIn, minReturn, deadlin
  * @param {{ from: string, amountIn: bigint, minReturn: bigint, descriptors: object[], deadline: number }} p
  */
 export async function simulateAggregatorSwap(provider, { from, amountIn, minReturn, descriptors, deadline }) {
-  const data = encodeAggregatorSwap({ descriptors, amountIn, minReturn, deadline });
+  let data;
+  try {
+    data = encodeAggregatorSwap({ descriptors, amountIn, minReturn, deadline });
+  } catch (e) {
+    auditEvent('route_simulation_fail', { venue: 'aggregator', error: e.message });
+    return { ok: false, error: e.message, retryable: false };
+  }
   auditEvent('simulation_start', { venue: 'aggregator', amountIn: String(amountIn) });
   try {
-    await provider.call({ to: AGGREGATOR_PROXY, data, value: amountIn, from });
-    auditEvent('simulation_success', { venue: 'aggregator' });
-    return { ok: true };
+    const ret = await provider.call({ to: AGGREGATOR_PROXY, data, value: amountIn, from });
+    const amountOut = decodeCallAmount(ret);
+    auditEvent('route_simulation_pass', { venue: 'aggregator', amountOut: amountOut != null ? String(amountOut) : null });
+    return { ok: true, amountOut };
   } catch (e) {
     const err = e.shortMessage || e.message;
-    auditEvent('simulation_failure', { venue: 'aggregator', error: err });
-    return { ok: false, error: err };
+    auditEvent('route_simulation_fail', { venue: 'aggregator', error: err });
+    return { ok: false, error: err, retryable: true };
   }
 }
 
 /**
  * Execute aggregator swap (assumes rules + simulation passed).
- * @param {{ wallet: import('ethers').Wallet, provider: import('ethers').Provider, route: object, maxGasUsd: number, ethUsd: number }} p
+ * @param {{ wallet: import('ethers').Wallet, provider: import('ethers').Provider, route: object, maxGasUsd: number, ethUsd: number, dryRun?: boolean }} p
  */
-export async function executeAggregatorSwap({ wallet, provider, route, maxGasUsd, ethUsd }) {
+export async function executeAggregatorSwap({ wallet, provider, route, maxGasUsd, ethUsd, dryRun }) {
   const { computeGas } = await import('../swap.js');
-  const data = encodeAggregatorSwap({
-    descriptors: route.descriptors,
-    amountIn: route.amountIn,
-    minReturn: route.minOut,
-    deadline: route.deadline,
-  });
+  let data;
+  try {
+    data = encodeAggregatorSwap({
+      descriptors: route.descriptors,
+      amountIn: route.amountIn,
+      minReturn: route.minOut,
+      deadline: route.deadline,
+    });
+  } catch (e) {
+    return { sent: false, error: e.message, reason: e.reason || 'unsupported_swap_type', status: 'terminal' };
+  }
   const txReq = { to: AGGREGATOR_PROXY, data, value: route.amountIn, from: wallet.address };
 
   const sim = await simulateAggregatorSwap(provider, {
@@ -154,13 +259,20 @@ export async function executeAggregatorSwap({ wallet, provider, route, maxGasUsd
     descriptors: route.descriptors,
     deadline: route.deadline,
   });
-  if (!sim.ok) return { sent: false, error: 'aggregator_simulation_failed: ' + sim.error };
+  if (!sim.ok) {
+    return { sent: false, error: 'aggregator_simulation_failed: ' + sim.error, status: 'retry', retryable: true };
+  }
+
+  if (dryRun) {
+    return { sent: false, dryRun: true, status: 'sent', txHash: null };
+  }
 
   const gas = await computeGas(provider, txReq, maxGasUsd, ethUsd);
   try {
     const tx = await wallet.sendTransaction({ ...txReq, ...gas });
-    return { sent: true, txHash: tx.hash, tx };
+    return { sent: true, status: 'sent', txHash: tx.hash, tx };
   } catch (e) {
-    return { sent: false, error: e.shortMessage || e.message };
+    const msg = e.shortMessage || e.message;
+    return { sent: false, error: msg, status: 'retry', retryable: true };
   }
 }

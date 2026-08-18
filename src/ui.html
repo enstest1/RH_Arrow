@@ -236,22 +236,29 @@
           <input id="ab_spend" class="txtsm" placeholder="0.01" value="0.01"></div>
         <div class="row"><span class="k">Slippage tolerance %</span>
           <input id="ab_tol" class="txtsm" placeholder="15" value="15"></div>
-        <div class="row"><span class="k">Max launch tax %</span>
-          <input id="ab_maxtax" class="txtsm" placeholder="15" value="15"></div>
+        <div class="row"><span class="k">Launch tax protection</span><span class="v" id="ab_taxprot">unavailable</span></div>
+        <div class="row"><span class="k">Sellability gate</span><span class="v" id="ab_sellgate">optional — not a launch gate</span></div>
 
+        <div class="row"><span class="k">Scanner</span><span class="v" id="ab_scanner">—</span></div>
+        <div class="row"><span class="k">HTTP RPC</span><span class="v" id="ab_http">—</span></div>
         <div class="row"><span class="k">Routes — launcher</span><span class="v" id="ab_route_launcher">—</span></div>
         <div class="row"><span class="k">Routes — aggregator</span><span class="v" id="ab_route_agg">—</span></div>
+        <div class="row"><span class="k">Aggregator enabled</span><span class="v" id="ab_agg_on">—</span></div>
         <div class="row"><span class="k">Routes — v4</span><span class="v" id="ab_route_v4">—</span></div>
+        <div class="row"><span class="k">V4 enabled</span><span class="v" id="ab_v4_on">—</span></div>
+        <div class="row"><span class="k">Current route</span><span class="v" id="ab_curroute">—</span></div>
         <div class="row"><span class="k">Aggregator proxy</span><span class="v mono" id="ab_agg_proxy">—</span></div>
         <div class="row"><span class="k">Aggregator impl</span><span class="v mono" id="ab_agg_impl">—</span></div>
-        <div class="row"><span class="k">Impl validated</span><span class="v" id="ab_agg_valid">—</span></div>
+        <div class="row"><span class="k">Impl verified</span><span class="v" id="ab_agg_valid">—</span></div>
         <div class="row"><span class="k">Aggregator fee</span><span class="v" id="ab_agg_fee">—</span></div>
+        <div class="row"><span class="k">Fee source</span><span class="v" id="ab_agg_feesrc">—</span></div>
 
         <div class="row"><span class="k">Chain WebSocket</span><span class="v" id="ab_ws">—</span></div>
         <div class="row"><span class="k">Chain mode</span><span class="v" id="ab_chainmode">—</span></div>
         <div class="row"><span class="k">Latest / last block</span><span class="v" id="ab_block">—</span></div>
         <div class="row"><span class="k">Watched launch addresses</span><span class="v" id="ab_watchn">—</span></div>
         <div class="row"><span class="k">Pending target</span><span class="v mono" id="ab_pending">—</span></div>
+        <div class="row"><span class="k">Pending retries</span><span class="v mono" id="ab_retries">—</span></div>
 
         <div class="row"><span class="k">Watching</span><span class="v good" id="ab_watching">—</span></div>
         <div class="row"><span class="k">Wallet</span><span class="v mono" id="ab_wallet">—</span></div>
@@ -459,7 +466,6 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
     if (active !== 'ab_handles') ab$('ab_handles').value = (s.handles || []).join(', ');
     if (active !== 'ab_spend') ab$('ab_spend').value = s.maxSpendEth || '';
     if (active !== 'ab_tol') ab$('ab_tol').value = s.slippageTolerancePct || '';
-    if (active !== 'ab_maxtax') ab$('ab_maxtax').value = s.maxLaunchTaxPct || '';
     if (active !== 'ab_target') ab$('ab_target').value = s.targetSymbol || 'CLOCKIN';
     if (active !== 'ab_chain_on') ab$('ab_chain_on').checked = s.chainEnabled !== false;
     if (active !== 'ab_x_on') ab$('ab_x_on').checked = s.xEnabled !== false;
@@ -479,11 +485,25 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
         : (handles.length ? handles.join(', ') + ' (stopped)' : '—');
       ab$('ab_ws').textContent = st.wsConnected ? 'CONNECTED' : (st.chainWatching ? 'disconnected' : '—');
       ab$('ab_ws').className = 'v' + (st.wsConnected ? ' good' : (st.chainWatching ? ' bad' : ''));
-      ab$('ab_chainmode').textContent = st.chainMode || '—';
+      ab$('ab_chainmode').textContent = st.scannerMode || st.chainMode || '—';
       ab$('ab_block').textContent = st.lastProcessedBlock != null ? String(st.lastProcessedBlock) : '—';
       ab$('ab_watchn').textContent = st.watchAddressCount != null ? String(st.watchAddressCount) : '—';
       ab$('ab_pending').textContent = st.pendingTarget
         ? (st.pendingTarget.symbol + ' ' + st.pendingTarget.contract.slice(0, 10) + '…')
+        : '—';
+      ab$('ab_retries').textContent = (st.pendingRetries && st.pendingRetries.length)
+        ? (st.pendingRetries.length + ' — ' + st.pendingRetries.map((a) => a.slice(0, 10) + '…').join(', '))
+        : '—';
+      ab$('ab_scanner').textContent = st.chainWatching
+        ? ((st.scannerMode || st.chainMode || 'on') + (st.wsConnected ? ' / WSS' : ''))
+        : 'stopped';
+      ab$('ab_http').textContent = st.httpRpc === true ? 'PASS' : (st.httpRpc === false ? 'FAIL' : '—');
+      ab$('ab_http').className = 'v' + (st.httpRpc === true ? ' good' : (st.httpRpc === false ? ' bad' : ''));
+      ab$('ab_taxprot').textContent = st.launchTaxProtection || 'unavailable';
+      ab$('ab_taxprot').className = 'v';
+      ab$('ab_sellgate').textContent = st.sellabilityGate || 'optional — not a launch gate';
+      ab$('ab_curroute').textContent = st.lastRouteStatus?.venue
+        ? (st.lastRouteStatus.venue + ' attempt ' + (st.lastRouteStatus.attempt || '?'))
         : '—';
       ab$('ab_wallet').textContent = st.wallet
         ? (st.wallet.slice(0, 6) + '…' + st.wallet.slice(-4))
@@ -496,12 +516,20 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       ab$('ab_route_launcher').textContent = routes.launcher || '—';
       ab$('ab_route_agg').textContent = routes.aggregator || '—';
       ab$('ab_route_v4').textContent = routes.v4 ? String(routes.v4) : '—';
+      ab$('ab_agg_on').textContent = (st.aggregator && st.aggregator.enabled) ? 'enabled' : 'disabled';
+      ab$('ab_agg_on').className = 'v' + (st.aggregator?.enabled ? ' good' : ' bad');
+      ab$('ab_v4_on').textContent = routes.v4 === 'available' ? 'enabled' : 'disabled';
       const agg = st.aggregator || {};
-      ab$('ab_agg_proxy').textContent = agg.proxy ? (agg.proxy.slice(0, 10) + '…') : '—';
-      ab$('ab_agg_impl').textContent = agg.implementation ? (agg.implementation.slice(0, 10) + '…') : '—';
+      ab$('ab_agg_proxy').textContent = agg.proxy || '—';
+      ab$('ab_agg_impl').textContent = agg.implementation || '—';
       ab$('ab_agg_valid').textContent = agg.validated ? 'YES' : 'NO';
       ab$('ab_agg_valid').className = 'v' + (agg.validated ? ' good' : ' bad');
-      ab$('ab_agg_fee').textContent = agg.feeBps != null ? (agg.feeBps / 100).toFixed(2) + '%' : '—';
+      const feeRaw = agg.feeRateRaw != null ? agg.feeRateRaw : agg.feeBps;
+      const feeLabel = agg.feeUnit === 'verified-bps' && feeRaw != null
+        ? (feeRaw / 100).toFixed(2) + '%'
+        : (feeRaw != null ? ('raw ' + feeRaw + ' (unit unverified)') : '—');
+      ab$('ab_agg_fee').textContent = feeLabel;
+      ab$('ab_agg_feesrc').textContent = [agg.feeSource, agg.feeUnit].filter(Boolean).join(', ') || '—';
       ab$('ab_status').textContent = st.watching ? 'WATCHING — LIVE' : 'stopped';
       ab$('ab_status').className = 'v' + (st.watching ? ' good' : '');
       ab$('ab_spent').textContent = (st.totalSpentEth || 0).toFixed(5) + ' ETH';
@@ -535,7 +563,7 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       handles: ab$('ab_handles').value.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean),
       maxSpendEth: ab$('ab_spend').value.trim(),
       slippageTolerancePct: ab$('ab_tol').value.trim(),
-      maxLaunchTaxPct: ab$('ab_maxtax').value.trim(),
+      maxLaunchTaxPct: '',
     };
   }
 

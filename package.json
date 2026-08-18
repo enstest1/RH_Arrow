@@ -10,7 +10,10 @@
     "ui": "bun src/server.js",
     "start": "bun src/server.js",
     "ui:node": "node src/server.js",
-    "test": "node --test tests/"
+    "test": "node --test --test-timeout=30000 tests/",
+    "test:historical": "node scripts/historical-verify.js",
+    "test:pipeline": "node scripts/pipeline-replay.js",
+    "test:agg-fixtures": "node scripts/verify-aggregator-fixtures.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

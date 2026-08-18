@@ -179,6 +179,21 @@ export function evaluateBuy(ctx) {
     return { ok: false, reason: 'no_route', detail: 'No executable buy route found for this token' };
   }
 
+  // Launch tax is only enforced when a real measurement is supplied.
+  // Unmeasured (null/undefined) is NOT treated as 0% — protection is unavailable.
+  const maxTax = Number(ctx.settings?.maxLaunchTaxPct);
+  const measured = ctx.launchTaxPct ?? q.launchTaxPct;
+  if (Number.isFinite(maxTax) && maxTax > 0 && Number.isFinite(Number(measured))) {
+    const tax = Number(measured);
+    if (tax > maxTax) {
+      return {
+        ok: false,
+        reason: 'launch_tax_too_high',
+        detail: 'Launch tax ' + tax + '% exceeds max ' + maxTax + '%',
+      };
+    }
+  }
+
   return { ok: true, spendWei };
 }
 

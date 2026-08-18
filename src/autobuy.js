@@ -39,10 +39,11 @@ import {
   discoverBestBuyRoute,
   executeRoute,
   routeAsQuote,
-  initAggregator,
   getAggregatorStatus,
   detectLauncherContext,
 } from './routes/index.js';
+import { runStartupSelfCheck } from './readiness.js';
+import { classifyCandidateResult, startRetryLoop } from './candidateretry.js';
 
 const CA_RE = /\b0x[a-fA-F0-9]{40}\b/;
 
@@ -66,6 +67,7 @@ export const state = {
   lastError: null,
   pendingTarget: null,
   lastRouteStatus: null,
+  lastReadiness: null,
 };
 
 export function log(msg) {
@@ -85,7 +87,7 @@ let _timer = null;
 /** Only true during executeRoute broadcast — NOT during route retries. */
 let _buying = false;
 let _xclient = null;
-/** @type {Map<string, ReturnType<typeof setInterval>>} */
+/** @type {Map<string, { stop: Function, getAttempt?: Function, startedAt?: number }>} */
 const _routeRetryTimers = new Map();
 /** Bound concurrent candidate pipelines (symbol check + route discovery). */
 const MAX_CANDIDATE_PIPELINES = Math.max(1, Number(process.env.MAX_CANDIDATE_PIPELINES) || 8);
@@ -120,35 +122,58 @@ function sourceLabel(source) {
 
 function stopRouteRetry(contract) {
   const k = String(contract).toLowerCase();
-  const t = _routeRetryTimers.get(k);
-  if (t) clearInterval(t);
+  const h = _routeRetryTimers.get(k);
+  if (h?.stop) h.stop();
   _routeRetryTimers.delete(k);
 }
 
 /**
  * Shared buy pipeline — chain and X both enter here.
- * @param {{ contract: string, source: object, timings?: object }} args
+ * @param {{ contract: string, source: object, timings?: object, dryRun?: boolean, provider?: import('ethers').Provider, wallet?: { address: string, provider?: import('ethers').Provider } }} args
  */
-export async function handleCandidate({ contract, source, timings = {} }) {
+export async function handleCandidate({ contract, source, timings = {}, dryRun = false, provider: injectedProvider, wallet: injectedWallet }) {
+  const windowMs = routeRetryWindowMs();
+  const started = timings.candidateExtractedAt || Date.now();
+  if (Date.now() - started > windowMs) {
+    auditEvent('candidate_expired', { candidateContract: contract });
+    return { action: 'skipped', reason: 'route_timeout', status: 'terminal' };
+  }
   if (_candidateInFlight >= MAX_CANDIDATE_PIPELINES) {
     auditEvent('candidate_deferred', { candidateContract: contract, reason: 'pipeline_full' });
-    return { action: 'deferred', reason: 'pipeline_full' };
+    setTimeout(() => {
+      handleCandidate({
+        contract,
+        source,
+        timings: { ...timings, candidateExtractedAt: started },
+        dryRun,
+        provider: injectedProvider,
+        wallet: injectedWallet,
+      }).catch((e) => log('[CHAIN] deferred candidate: ' + e.message));
+    }, routeRetryMs());
+    return { action: 'deferred', reason: 'pipeline_full', status: 'retry' };
   }
   _candidateInFlight++;
   try {
-    return await _handleCandidateInner({ contract, source, timings });
+    return await _handleCandidateInner({
+      contract,
+      source,
+      timings: { ...timings, candidateExtractedAt: started },
+      dryRun,
+      injectedProvider,
+      injectedWallet,
+    });
   } finally {
     _candidateInFlight--;
   }
 }
 
-async function _handleCandidateInner({ contract, source, timings = {} }) {
+async function _handleCandidateInner({ contract, source, timings = {}, dryRun = false, injectedProvider, injectedWallet }) {
   const settings = getSettings();
-  const w = walletOrNull();
+  const w = injectedWallet || walletOrNull();
   const addr = normAddr(contract);
   if (!addr) {
-    auditEvent('target_rejected', { reason: 'invalid_contract', contract });
-    return { action: 'skipped', reason: 'invalid_contract' };
+    auditEvent('candidate_rejected', { reason: 'invalid_contract', contract });
+    return { action: 'skipped', reason: 'invalid_contract', status: 'terminal' };
   }
 
   auditEvent('candidate_detected', {
@@ -163,31 +188,42 @@ async function _handleCandidateInner({ contract, source, timings = {} }) {
 
   if (alreadyBought(addr)) {
     log('⏭️  already bought ' + addr);
-    auditEvent('duplicate_candidate', { candidateContract: addr, reason: 'already_bought' });
-    return { action: 'skipped', reason: 'already_bought' };
+    auditEvent('candidate_rejected', { candidateContract: addr, reason: 'already_bought' });
+    return { action: 'skipped', reason: 'already_bought', status: 'terminal' };
   }
 
   const trust = evaluateSourceTrust(settings, source);
   if (!trust.ok) {
     log('⏭️  ' + trust.detail);
-    auditEvent('target_rejected', { candidateContract: addr, reason: trust.reason });
-    return { action: 'skipped', reason: trust.reason };
+    auditEvent('candidate_rejected', { candidateContract: addr, reason: trust.reason });
+    return { action: 'skipped', reason: trust.reason, status: 'terminal' };
+  }
+
+  if (_routeRetryTimers.has(addr.toLowerCase())) {
+    auditEvent('candidate_deduped', { candidateContract: addr, reason: 'retry_in_flight' });
+    return { action: 'skipped', reason: 'duplicate_candidate' };
   }
 
   if (seenCandidate(addr) && source.type === 'chain') {
     const pending = getPendingCandidate(addr);
     if (!pending) {
-      auditEvent('duplicate_candidate', { candidateContract: addr, reason: 'seen_candidate' });
+      auditEvent('candidate_deduped', { candidateContract: addr, reason: 'seen_candidate' });
       return { action: 'skipped', reason: 'duplicate_candidate' };
     }
   }
 
-  if (!w) {
+  if (!w && !dryRun) {
     log('❌ no PRIVATE_KEY loaded');
-    return { action: 'skipped', reason: 'no_key' };
+    auditEvent('candidate_rejected', { candidateContract: addr, reason: 'no_key' });
+    return { action: 'skipped', reason: 'no_key', status: 'terminal' };
   }
 
-  const provider = w.provider;
+  const provider = injectedProvider || w?.provider;
+  if (!provider) {
+    auditEvent('candidate_rejected', { candidateContract: addr, reason: 'no_provider' });
+    return { action: 'skipped', reason: 'no_provider', status: 'terminal' };
+  }
+  const wallet = w || { address: '0x0000000000000000000000000000000000000001', provider };
   const t0 = timings.candidateExtractedAt || Date.now();
   let meta;
   try {
@@ -200,19 +236,19 @@ async function _handleCandidateInner({ contract, source, timings = {} }) {
     });
   } catch (e) {
     log('⏭️  metadata failed: ' + e.message);
-    auditEvent('target_rejected', { candidateContract: addr, reason: 'metadata_failed' });
-    return { action: 'skipped', reason: 'metadata_failed' };
+    auditEvent('candidate_rejected', { candidateContract: addr, reason: 'metadata_failed' });
+    return { action: 'skipped', reason: 'metadata_failed', status: 'terminal' };
   }
 
   const symGate = evaluateTargetSymbol(settings, meta.symbol);
   if (!symGate.ok) {
     log('⏭️  ' + symGate.detail);
-    auditEvent('target_rejected', {
+    auditEvent('candidate_rejected', {
       candidateContract: addr,
       symbol: meta.symbol,
       reason: symGate.reason,
     });
-    return { action: 'skipped', reason: symGate.reason };
+    return { action: 'skipped', reason: symGate.reason, status: 'terminal' };
   }
 
   markCandidate(addr);
@@ -240,10 +276,11 @@ async function _handleCandidateInner({ contract, source, timings = {} }) {
     source,
     meta,
     settings,
-    wallet: w,
+    wallet,
     provider,
     timings,
     label,
+    dryRun,
   });
 }
 
@@ -257,22 +294,25 @@ export async function handleCA({ contract, handle, tweetUrl }) {
   });
 }
 
+/**
+ * Discover + simulate + execute with a self-scheduling retry worker.
+ * Busy wallets and failed sends stay in the retry window; they are not dropped.
+ * @param {{ contract: string, source: object, meta: object, settings: object, wallet: { address: string }, provider: import('ethers').Provider, timings: object, label: string, dryRun?: boolean }} ctx
+ */
 async function attemptBuyWithRouteRetry(ctx) {
-  const { contract, source, meta, settings, wallet, provider, timings, label } = ctx;
+  const { contract, source, meta, settings, wallet, provider, timings, label, dryRun } = ctx;
   const spendWei = ethToWei(settings.maxSpendEth);
   const slippagePct = Number(settings.slippageTolerancePct);
+  const started = Date.now();
+  log('[TAX] launch tax check unavailable for this route');
 
   const tryOnce = async (attempt) => {
     if (alreadyBought(contract)) {
-      stopRouteRetry(contract);
       clearPendingCandidate(contract);
-      return { action: 'skipped', reason: 'already_bought' };
+      return { action: 'skipped', reason: 'already_bought', status: 'terminal' };
     }
 
     timings.routeDiscoveryStartedAt = Date.now();
-    auditEvent('route_retry', { candidateContract: contract, attempt });
-    auditEvent('route_attempt', { candidateContract: contract, attempt });
-
     const route = spendWei > 0n
       ? await discoverBestBuyRoute({
         provider,
@@ -280,26 +320,42 @@ async function attemptBuyWithRouteRetry(ctx) {
         amountIn: spendWei,
         slippagePct,
         source,
+        from: wallet.address,
       })
       : null;
 
     timings.routeFoundAt = route ? Date.now() : null;
 
-    if (!route?.expectedOut) {
-      auditEvent('route_missing', { candidateContract: contract, attempt });
+    if (!route?.expectedOut || !route.minOut || route.minOut <= 0n) {
+      auditEvent('route_not_found', { candidateContract: contract, attempt });
       log('[ROUTE] no executable route yet (attempt ' + attempt + ')');
       setPendingCandidate(contract, { source, symbol: meta.symbol, attempts: attempt });
-      state.lastRouteStatus = { contract, attempt, venues: getRouteCapabilityHints() };
-      return null;
+      state.lastRouteStatus = { contract, attempt, venue: null, venues: getRouteCapabilityHints() };
+      return { action: 'skipped', reason: 'no_route', status: 'retry' };
     }
 
     log('[ROUTE] ' + route.venue + ' expectedOut ' + route.expectedOut.toString() + ' — attempt ' + attempt);
-    stopRouteRetry(contract);
+    state.lastRouteStatus = { contract, attempt, venue: route.venue, venues: getRouteCapabilityHints() };
+
+    // Dry-run / tests / replay: simulate only. Never sendTransaction or recordBuy.
+    if (dryRun) {
+      auditEvent('buy_dry_run', { candidateContract: contract, venue: route.venue });
+      return {
+        action: 'simulated',
+        dryRun: true,
+        venue: route.venue,
+        simulation: route.simulation,
+        hops: route.metadata?.hops,
+        swapTypes: route.metadata?.swapTypes,
+        status: 'terminal',
+      };
+    }
 
     if (_buying) {
-      log('⏳ buy in flight — deferring ' + contract);
-      auditEvent('buy_gate_reject', { candidateContract: contract, reason: 'busy' });
-      return { action: 'skipped', reason: 'busy' };
+      log('⏳ buy in flight — keeping ' + contract + ' in retry');
+      auditEvent('buy_busy', { candidateContract: contract });
+      setPendingCandidate(contract, { source, symbol: meta.symbol, attempts: attempt, busy: true });
+      return { action: 'skipped', reason: 'busy', status: 'retry' };
     }
 
     const balance = await provider.getBalance(wallet.address);
@@ -312,19 +368,21 @@ async function attemptBuyWithRouteRetry(ctx) {
       quote,
       source,
       symbol: meta.symbol,
+      launchTaxPct: route.launchTaxPct,
     });
 
     if (!verdict.ok) {
       log('⏭️  skipped: ' + verdict.detail);
       auditEvent('buy_gate_reject', { candidateContract: contract, reason: verdict.reason, detail: verdict.detail });
-      return { action: 'skipped', reason: verdict.reason };
+      const status = classifyCandidateResult({ action: 'skipped', reason: verdict.reason });
+      return { action: 'skipped', reason: verdict.reason, status };
     }
 
     auditEvent('buy_gate_pass', { candidateContract: contract, spendWei: String(verdict.spendWei), venue: route.venue });
 
     _buying = true;
     timings.sendStartedAt = Date.now();
-    auditEvent('buy_send_start', { candidateContract: contract, venue: route.venue });
+    auditEvent('buy_send_started', { candidateContract: contract, venue: route.venue });
     log('[BUY] sending ' + weiToEthNum(verdict.spendWei).toFixed(5) + ' ETH via ' + route.venue + ' of ' + label + '…');
 
     try {
@@ -338,11 +396,15 @@ async function attemptBuyWithRouteRetry(ctx) {
       timings.txSubmittedAt = Date.now();
 
       if (!result.sent) {
-        log('❌ buy failed: ' + result.error);
-        auditEvent('pipeline_error', { candidateContract: contract, error: result.error, venue: route.venue });
-        return { action: 'failed', reason: result.error };
+        log('❌ buy failed (will retry): ' + result.error);
+        auditEvent('buy_failed', { candidateContract: contract, error: result.error, venue: route.venue });
+        if (result.status === 'terminal' || result.reason === 'unsupported_swap_type') {
+          return { action: 'failed', reason: result.reason || 'buy_failed', status: 'terminal' };
+        }
+        return { action: 'failed', reason: result.error, status: 'retry' };
       }
 
+      stopRouteRetry(contract);
       clearPendingCandidate(contract);
       recordBuy(contract, {
         txHash: result.txHash,
@@ -355,7 +417,7 @@ async function attemptBuyWithRouteRetry(ctx) {
         venue: route.venue,
       });
 
-      auditEvent('buy_submitted', { candidateContract: contract, txHash: result.txHash, venue: route.venue });
+      auditEvent('buy_sent', { candidateContract: contract, txHash: result.txHash, venue: route.venue });
       log('🚀 BOUGHT ' + label + ' via ' + route.venue + ' — tx ' + result.txHash);
 
       const candMs = timings.candidateExtractedAt
@@ -374,54 +436,45 @@ async function attemptBuyWithRouteRetry(ctx) {
       }).catch((e) => log('⚠️ confirmation wait failed: ' + e.message));
 
       state.pendingTarget = null;
-      return { action: 'bought', txHash: result.txHash, venue: route.venue };
+      return { action: 'bought', txHash: result.txHash, venue: route.venue, status: 'sent' };
     } finally {
       _buying = false;
     }
   };
 
   const first = await tryOnce(1);
-  if (first) return first;
+  const firstCls = classifyCandidateResult(first);
+  if (dryRun || firstCls === 'sent' || firstCls === 'terminal') return first;
 
   const key = contract.toLowerCase();
-  if (_routeRetryTimers.has(key)) return { action: 'pending', reason: 'no_route_yet' };
-
-  const started = Date.now();
-  let attempt = 1;
-  const interval = routeRetryMs();
-  const window = routeRetryWindowMs();
+  if (_routeRetryTimers.has(key)) return { action: 'pending', reason: 'retry_in_flight' };
 
   return new Promise((resolve) => {
-    const timer = setInterval(async () => {
-      if (Date.now() - started > window) {
-        stopRouteRetry(contract);
-        clearPendingCandidate(contract);
-        log('[ROUTE] timeout — no executable route for ' + contract);
-        auditEvent('route_timeout', { candidateContract: contract });
-        resolve({ action: 'skipped', reason: 'route_timeout' });
-        return;
-      }
-      attempt++;
-      try {
-        const r = await tryOnce(attempt);
-        if (r) {
-          stopRouteRetry(contract);
-          resolve(r);
+    const handle = startRetryLoop({
+      key,
+      tryOnce,
+      delayMs: routeRetryMs(),
+      windowMs: routeRetryWindowMs(),
+      startedAt: started,
+      onDone: (r) => {
+        _routeRetryTimers.delete(key);
+        if (r?.reason === 'route_timeout') {
+          clearPendingCandidate(contract);
+          log('[ROUTE] timeout — no executable route for ' + contract);
         }
-      } catch (e) {
-        log('[ROUTE] retry error: ' + e.message);
-      }
-    }, interval);
-    _routeRetryTimers.set(key, timer);
+        resolve(r);
+      },
+    });
+    _routeRetryTimers.set(key, handle);
   });
 }
 
 function getRouteCapabilityHints() {
   const agg = getAggregatorStatus();
   return {
-    launcher: 'unverified',
+    launcher: 'detect-only',
     aggregator: agg.enabled ? 'available' : 'disabled',
-    v4: Boolean(V4_QUOTER),
+    v4: Boolean(V4_QUOTER) ? 'available' : 'disabled',
   };
 }
 
@@ -469,20 +522,23 @@ async function pollOnce() {
 export async function startWatching() {
   if (state.watching) return { ok: true, already: true };
   const settings = getSettings();
-  state.watching = true;
-
-  log('[LIVE] target ' + normalizeSymbol(settings.targetSymbol || process.env.TARGET_SYMBOL || 'CLOCKIN'));
-
   const w = walletOrNull();
-  if (w) {
-    try {
-      const bal = await w.provider.getBalance(w.address);
-      log('[WALLET] ' + w.address + ' balance ' + weiToEthNum(bal).toFixed(5) + ' ETH');
-    } catch {}
-    await initAggregator(w.provider);
-  } else {
-    log('⚠️  no wallet — detection only');
+  const provider = w?.provider || makeProvider();
+  if (!_provider) _provider = provider;
+
+  const ready = await runStartupSelfCheck({ provider, wallet: w, settings });
+  state.lastReadiness = ready;
+  for (const line of ready.summary.split('\n')) log(line);
+
+  if (!ready.canArm) {
+    saveSettings({ enabled: false });
+    auditEvent('live_disarmed', { failures: ready.failures });
+    log('[LIVE] auto-buy DISARMED — P0 self-check failed: ' + ready.failures.join(', '));
+    return { ok: false, errors: ready.failures, readiness: ready };
   }
+
+  state.watching = true;
+  log('[LIVE] target ' + normalizeSymbol(settings.targetSymbol || process.env.TARGET_SYMBOL || 'CLOCKIN'));
 
   if (settings.chainEnabled !== false && process.env.CHAIN_SCAN_ENABLED !== 'false') {
     const n = (settings.chainWatchlist || []).filter((e) => e.enabled).length;
@@ -506,7 +562,7 @@ export async function startWatching() {
 
   auditEvent('live_armed', { targetSymbol: settings.targetSymbol });
   log('[LIVE] auto-buy armed');
-  return { ok: true };
+  return { ok: true, readiness: ready };
 }
 
 export function stopWatching() {
@@ -540,12 +596,20 @@ export async function readAutoStatus() {
     watchAddressCount: (settings.chainWatchlist || []).filter((e) => e.enabled).length,
     chainWatching: chain.chainWatching,
     chainMode: chain.chainMode,
+    scannerMode: chain.scannerMode || chain.chainMode,
     wsConnected: chain.wsConnected,
     lastProcessedBlock: chain.lastProcessedBlock,
     lastChainSignal: chain.lastChainSignal,
     aggregator: agg,
     routes: getRouteCapabilityHints(),
     candidatePipelinesInFlight: _candidateInFlight,
+    pendingRetries: [..._routeRetryTimers.keys()],
+    lastRouteStatus: state.lastRouteStatus,
+    lastReadiness: state.lastReadiness,
+    launchTaxProtection: 'unavailable',
+    sellabilityGate: 'optional-not-launch-gate',
+    httpRpc: state.lastReadiness?.httpOk ?? null,
+    wssConfigured: state.lastReadiness?.wssOk ?? null,
   };
   if (w) {
     out.wallet = w.address;

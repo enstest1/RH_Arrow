@@ -131,3 +131,20 @@ test('price impact and minOut maths', () => {
   assert.equal(priceImpactPct(950n, 1000n), 5);
   assert.equal(minOutWei(1000n, 10), 900n);
 });
+
+test('unmeasured launch tax is not treated as 0% protection', () => {
+  const v = evaluateBuy(ctx({
+    settings: settings({ maxLaunchTaxPct: '5' }),
+    launchTaxPct: null,
+  }));
+  assert.equal(v.ok, true);
+});
+
+test('measured launch tax above max is rejected', () => {
+  const v = evaluateBuy(ctx({
+    settings: settings({ maxLaunchTaxPct: '5' }),
+    launchTaxPct: 12,
+  }));
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, 'launch_tax_too_high');
+});

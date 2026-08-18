@@ -1,0 +1,71 @@
+{
+  "proxy": "0x65050A9b7E5075A2bA5cED7b1b64EE66262c40Dc",
+  "selector": "0x4d819a2a",
+  "feeSemantics": {
+    "feeRateRaw": 100,
+    "feeSource": "contract-reported",
+    "feeUnit": "verified-bps",
+    "proof": [
+      "implementation 0xb70DA7425Bc26A6aFd60d080148248389a9073bF feeRate() returns PUSH2 0x0064 (100)",
+      "fee math in bytecode: amount * 0x64 / 0x2710 (100 / 10000)",
+      "successful ETH-in tx 0x9e08e8952589e3b1c5f299c32fac0325743ec0b2bff639c2f761a01546b077f9: 0.05 ETH in, 0.0495 WETH to pool"
+    ]
+  },
+  "transactions": [
+    {
+      "id": "type1-eth-in-pons",
+      "kind": "on-chain-success",
+      "note": "Proven successful type 1 ETH-in aggregator swap (not restricted to recent head blocks).",
+      "txHash": "0x9e08e8952589e3b1c5f299c32fac0325743ec0b2bff639c2f761a01546b077f9",
+      "block": 39445351,
+      "to": "0x65050A9b7E5075A2bA5cED7b1b64EE66262c40Dc",
+      "value": "50000000000000000",
+      "selector": "0x4d819a2a",
+      "success": true,
+      "outer": {
+        "feeToken": "0x0000000000000000000000000000000000000000",
+        "amountIn": "50000000000000000",
+        "minReturn": "3026901572493025796646",
+        "deadline": "1787030737"
+      },
+      "swapTypes": [1],
+      "descriptors": [
+        {
+          "swapType": 1,
+          "tokenIn": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+          "tokenOut": "0x39dbed3a2bd333467115de45665cc57f813c4571",
+          "poolAddress": "0xed50bdeea8adc232f159486192a4157281d722ff",
+          "fee": 3000,
+          "tickSpacing": 60
+        }
+      ]
+    },
+    {
+      "id": "type12-strike-eth-call",
+      "kind": "live-eth-call-simulation",
+      "note": "No standalone historical ETH-in swap() with swapType 12 was found. Type 12 is proven as hop 2 of the live STRIKE aggregator eth_call (types 1 then 12) which simulates successfully. This is not an on-chain transaction fixture.",
+      "txHash": null,
+      "token": "0x5aeD379A72BD2533371d153135c47d5EB61BaBc8",
+      "success": true,
+      "swapTypes": [1, 12],
+      "descriptors": [
+        {
+          "swapType": 1,
+          "tokenIn": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+          "tokenOut": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+          "poolAddress": "0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca",
+          "fee": 100,
+          "tickSpacing": 1
+        },
+        {
+          "swapType": 12,
+          "tokenIn": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+          "tokenOut": "0x5aed379a72bd2533371d153135c47d5eb61babc8",
+          "poolAddress": "0x97cf6a6271ff5cabdf3a6698e218a47fb65a15d7",
+          "fee": 10000,
+          "tickSpacing": 2000
+        }
+      ]
+    }
+  ]
+}

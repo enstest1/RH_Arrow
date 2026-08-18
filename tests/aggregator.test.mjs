@@ -80,6 +80,22 @@ test('EIP-1967 slot constant is 32-byte word', () => {
   assert.match(EIP1967_IMPL_SLOT, /^0x[0-9a-f]{64}$/i);
 });
 
+test('swapType 2 is not encoded (unverified packed layout)', () => {
+  assert.throws(() => encodeAggregatorSwap({
+    descriptors: [{
+      swapType: 2,
+      tokenIn: WETH,
+      tokenOut: '0xc72f232a6869e6cf34dc06129affd07f8a2a246a',
+      poolAddress: '0x543127d6a1932689faacc1afad4a81146d9ccf54',
+      fee: 0,
+      tickSpacing: 0,
+    }],
+    amountIn: 1n,
+    minReturn: 1n,
+    deadline: 1,
+  }), /unsupported_swap_type/);
+});
+
 test('implementation mismatch disables aggregator state', async () => {
   const { aggState } = await import('../src/routes/aggregator.js');
   const prev = { ...aggState };

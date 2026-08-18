@@ -5,3 +5,5 @@ cookies.json
 autobuy-state.json
 autobuy-state.json.tmp
 autobuy-events.jsonl
+scripts/launch-replay-output.json
+scripts/launch-verify-output.json

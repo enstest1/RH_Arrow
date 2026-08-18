@@ -38,19 +38,44 @@ export const UNI_V3_TICK_SPACING = { 100: 1, 500: 10, 3000: 60, 10000: 200 };
 
 export const V4_POOL_MANAGER = '0x8366a39cc670b4001a1121b8f6a443a643e40951';
 
-/** Proven swapType enum values only — do not invent others. */
+/**
+ * Swap types independently proven by successful aggregator calldata decode.
+ * Type 1: Uniswap V3 (fee + tickSpacing populated, V3 factory pools).
+ * Type 12: Up CL (historical STRIKE USDG hop; Up CL factory getPool).
+ * Type 2 appears in some txs with a different packed layout — NOT encoded here.
+ * Type 27 appears in live txs — meaning unverified, fail-closed.
+ */
 export const SWAP_TYPE = Object.freeze({
   V3: 1,
-  V4: 2,
   UP_V3: 12,
 });
+
+/** Only these types may be encoded for execution. */
+export const VERIFIED_SWAP_TYPES = Object.freeze({
+  1: 'v3',
+  12: 'up_cl',
+});
+
+/** Up CL factory — pool.factory() on historical STRIKE USDG pool 0x97cf6a…. */
+export const UP_CL_FACTORY = '0x1ac9db4a2608ba45d6127b1737949b51bb54b7f3';
+
+/**
+ * Bounded tickSpacing probes for Up CL getPool(address,address,int24).
+ * 2000 proven on STRIKE; 1/10/60/200 are Uniswap V3 conventional spacings
+ * used only as a bounded search (same idea as V3 fee tiers).
+ */
+export const UP_CL_TICK_SPACINGS = [1, 10, 60, 200, 2000];
+
+export const UP_CL_FACTORY_ABI = [
+  'function getPool(address,address,int24) view returns (address)',
+];
 
 /** Bounded bridge assets for route search (narrow CLOCKIN objective). */
 export const BRIDGE_ASSETS = [WETH, USDG];
 
 export const V3_FEE_TIERS = [100, 500, 3000, 10000];
 
-/** STRIKE launcher — detection only until buy ABI verified. */
+/** STRIKE launcher — detection only (no historical launcher-buy txs). */
 export const STRIKE_LAUNCHER = '0xc6cc8979e6e4f74d2da3ff2e514ff3f336cb1e73';
 
 export const AGGREGATOR_SWAP_ABI = [
@@ -66,6 +91,8 @@ export const V3_POOL_ABI = [
 ];
 
 export const V3_FACTORY_ABI = ['function getPool(address,address,uint24) view returns (address)'];
+
+export const FEE_RATE_ABI = ['function feeRate() view returns (uint256)'];
 
 export const V3_QUOTER_ABI = [
   'function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) view returns (uint256 amountOut,uint160,uint32,uint256)',

@@ -53,6 +53,7 @@ export function getChainScannerStatus() {
   return {
     chainWatching: _running,
     chainMode: _mode,
+    scannerMode: _mode,
     wsConnected: _wsConnected,
     lastProcessedBlock: _lastBlock ?? getLastProcessedBlock(),
     lastChainSignal: _lastSignal,
@@ -60,18 +61,43 @@ export function getChainScannerStatus() {
 }
 
 /**
+ * Ethers v6: getBlock(n, true) puts hashes in block.transactions and objects
+ * in block.prefetchedTransactions. Never skip the block because hashes are strings.
+ * @param {import('ethers').Provider} provider
+ * @param {import('ethers').Block} block
+ */
+export async function resolveBlockTransactions(provider, block) {
+  if (!block) return [];
+  if (Array.isArray(block.prefetchedTransactions) && block.prefetchedTransactions.length) {
+    return block.prefetchedTransactions.filter(Boolean);
+  }
+  const raw = block.transactions || [];
+  if (!raw.length) return [];
+  if (typeof raw[0] === 'object' && raw[0]?.hash) {
+    return raw.filter(Boolean);
+  }
+  const hashes = raw.map((tx) => (typeof tx === 'string' ? tx : tx?.hash)).filter(Boolean);
+  const txs = await Promise.all(hashes.map((h) => provider.getTransaction(h)));
+  return txs.filter(Boolean);
+}
+
+/**
  * Process one block: scan txs touching watched addresses, extract candidates.
  * @param {number} blockNumber
+ * @param {{ running?: boolean, onCandidate?: Function, getSettings?: Function, provider?: import('ethers').Provider }} [overrides]
  */
-export async function processBlock(blockNumber) {
-  if (!_running || !_onCandidate || !_getSettings) return;
-  const settings = _getSettings();
+export async function processBlock(blockNumber, overrides = {}) {
+  const running = overrides.running ?? _running;
+  const onCandidate = overrides.onCandidate ?? _onCandidate;
+  const getSettings = overrides.getSettings ?? _getSettings;
+  if (!running || !onCandidate || !getSettings) return;
+  const settings = getSettings();
   if (!settings.chainEnabled) return;
 
   const watch = enabledWatchSet(settings);
   if (!watch.size) return;
 
-  const provider = httpProvider();
+  const provider = overrides.provider ?? httpProvider();
   auditEvent('block_seen', { blockNumber, blockSeenAt: Date.now() });
 
   let block;
@@ -81,14 +107,14 @@ export async function processBlock(blockNumber) {
     log('[CHAIN] block fetch failed ' + blockNumber + ': ' + e.message);
     return;
   }
-  if (!block?.transactions?.length) {
+  const txs = await resolveBlockTransactions(provider, block);
+  if (!txs.length) {
     _lastBlock = blockNumber;
     setLastProcessedBlock(blockNumber);
     return;
   }
 
-  for (const tx of block.transactions) {
-    if (typeof tx === 'string') continue;
+  for (const tx of txs) {
     if (!txTouchesWatch(tx, watch)) continue;
 
     const match = matchedWatchSide(tx, watch);
@@ -130,7 +156,7 @@ export async function processBlock(blockNumber) {
       markChainEvent(cKey);
 
       const candidateExtractedAt = Date.now();
-      auditEvent('candidate_extracted', {
+      auditEvent('candidate_detected', {
         blockNumber,
         sourceTxHash: tx.hash,
         candidateContract: c.contract,
@@ -142,7 +168,7 @@ export async function processBlock(blockNumber) {
       });
 
       // Fire-and-forget: route retries must NOT block subsequent candidates or blocks.
-      void _onCandidate({
+      void onCandidate({
         contract: c.contract,
         source: {
           type: 'chain',
@@ -166,6 +192,7 @@ export async function processBlock(blockNumber) {
 
 async function catchUp(fromBlock, toBlock) {
   if (fromBlock == null || toBlock == null || toBlock < fromBlock) return;
+  auditEvent('scanner_catchup', { fromBlock, toBlock });
   log('[CHAIN] catching up blocks ' + fromBlock + ' → ' + toBlock);
   for (let b = fromBlock; b <= toBlock; b++) {
     await processBlock(b);
@@ -204,22 +231,33 @@ function connectWebSocket() {
     }
     const ws = makeEventProvider();
     if (!ws) {
-      log('[CHAIN] no WSS URL — falling back to HTTP polling');
-      startHttpPoll();
+      log('[CHAIN] no WSS URL — HTTP polling (live ARM should have been blocked without ALLOW_HTTP_ONLY_LIVE)');
+      startHttpPoll('http-poll');
       return;
     }
     _ws = ws;
-    _mode = 'websocket';
+    // Keep HTTP fallback running until the first live WSS block proves the socket is healthy.
+    if (_mode !== 'http-fallback' && _mode !== 'http-poll') {
+      _mode = 'websocket';
+    }
 
     ws.on('block', (blockNumber) => {
       _wsConnected = true;
+      if (_mode !== 'websocket') {
+        stopHttpPoll();
+        _mode = 'websocket';
+        auditEvent('ws_recovered', { mode: 'websocket' });
+        log('[CHAIN] websocket recovered — HTTP fallback stopped');
+      }
       onNewBlock(blockNumber).catch((e) => log('[CHAIN] block error: ' + e.message));
     });
 
     const onDisconnect = () => {
       _wsConnected = false;
-      auditEvent('ws_disconnected');
-      log('[CHAIN] websocket disconnected — reconnecting');
+      // Keep scanning: HTTP immediately, WSS reconnect in parallel. Do not drop candidates.
+      auditEvent('scanner_degraded', { mode: 'http-fallback', reason: 'ws_disconnected' });
+      log('[CHAIN] websocket disconnected — HTTP fallback + reconnect');
+      startHttpPoll('http-fallback');
       scheduleReconnect(5000);
     };
 
@@ -239,21 +277,24 @@ function connectWebSocket() {
     }).catch(() => {});
   } catch (e) {
     log('[CHAIN] websocket setup failed: ' + e.message);
-    startHttpPoll();
+    startHttpPoll('http-poll');
   }
 }
 
-function startHttpPoll() {
-  stopHttpPoll();
-  _mode = 'http-poll';
+function startHttpPoll(mode = 'http-poll') {
+  _mode = mode;
   _wsConnected = false;
+  if (_httpPollTimer) return;
   const ms = Math.max(500, Number(process.env.CHAIN_HTTP_POLL_MS) || 2000);
-  log('CHAIN: DEGRADED — HTTP polling every ' + ms + 'ms');
+  log('CHAIN: DEGRADED — HTTP polling every ' + ms + 'ms (' + mode + ')');
+  auditEvent('scanner_degraded', { mode });
 
   let lastHead = getLastProcessedBlock();
-  _httpPollTimer = setInterval(async () => {
-    if (!_running) return;
-    try {
+  let pollInFlight = false;
+  _httpPollTimer = setInterval(() => {
+    if (!_running || pollInFlight) return;
+    pollInFlight = true;
+    (async () => {
       const head = await httpProvider().getBlockNumber();
       if (lastHead == null) {
         lastHead = head;
@@ -264,9 +305,8 @@ function startHttpPoll() {
         for (let b = lastHead + 1; b <= head; b++) await onNewBlock(b);
         lastHead = head;
       }
-    } catch (e) {
-      log('[CHAIN] HTTP poll error: ' + e.message);
-    }
+    })().catch((e) => log('[CHAIN] HTTP poll error: ' + e.message))
+      .finally(() => { pollInFlight = false; });
   }, ms);
 }
 
@@ -288,6 +328,15 @@ export function startChainScanner(opts) {
   auditEvent('scanner_started', { mode: 'chain' });
   connectWebSocket();
   return { ok: true };
+}
+
+/**
+ * Test helper: WSS drop after ARM must expose http-fallback without dropping work.
+ * Does not start a poll interval (avoids leaking timers in unit tests).
+ */
+export function emulateWsDisconnectForTest() {
+  _wsConnected = false;
+  _mode = 'http-fallback';
 }
 
 export function stopChainScanner() {
