@@ -4,3 +4,4 @@ node_modules/
 cookies.json
 autobuy-state.json
 autobuy-state.json.tmp
+autobuy-events.jsonl

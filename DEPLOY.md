@@ -31,12 +31,17 @@ is actually contested — run `npm run inspect` first and check ALLOWLIST_SUPPLY
 5. Copy the project up (from your laptop):
    scp -i your-key.pem -r ./rh-minter ubuntu@THE_PUBLIC_IP:~
 6. On the box:  cd rh-minter && npm install && cp .env.example .env && nano .env
-   (fill in PRIVATE_KEY, ALCHEMY_URL, PRICE_PER_UNIT_ETH, etc.)
+   (fill in PRIVATE_KEY, ALCHEMY_URL, ALCHEMY_WSS_URL, V4_QUOTER, TARGET_SYMBOL,
+   X_COOKIES_PATH, etc.)
 7. Don't expose the UI publicly. Run it bound to localhost and tunnel it to your laptop:
-   On the box:   npm run ui              (defaults to 127.0.0.1:4663 when no PORT set)
-   From laptop:  ssh -i your-key.pem -L 4663:localhost:4663 ubuntu@THE_PUBLIC_IP
-   Then open http://localhost:4663 on your laptop — the UI runs in Ohio, you view it locally.
-   This is the safest option: the dashboard is never public at all.
+   On the box:   UI_PORT=4666 node src/server.js
+   From laptop:  ssh -i your-key.pem -L 4666:localhost:4666 ubuntu@THE_PUBLIC_IP
+   Then open http://localhost:4666 on your laptop — the UI runs in Ohio, you view it locally.
+   Launch Scanner tab: Start Watching arms **chain WebSocket scanner (primary)** + **X fallback**.
+   Route discovery tries **launcher (detect-only)** → **aggregator (V3 / Up CL)** → **Uniswap v4**.
+   Set `AGGREGATOR_ENABLED=true` (default) and verify `AGGREGATOR_PROXY` / `AGGREGATOR_EXPECTED_IMPL`
+   match on-chain before production. Aggregator init runs on `/api/auto/start`.
+   Audit log writes to `autobuy-events.jsonl` on the box.
 8. Terminate the instance when the mint is done so you stop paying.
 
 ## Latency sanity check (either option)

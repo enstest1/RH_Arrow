@@ -227,7 +227,7 @@ const server = http.createServer(async (req,res) => {
       const s=saveSettings(b); return json(res,200,{ok:true, settings:s, errors:validateSettings(s)}); }
     if (req.method==='POST' && req.url==='/api/auto/start') { const s=getSettings();
       const errors=validateSettings(s); if (errors.length) return json(res,200,{ok:false,errors});
-      saveSettings({enabled:true}); return json(res,200, startWatching()); }
+      saveSettings({enabled:true}); return json(res,200, await startWatching()); }
     if (req.method==='POST' && req.url==='/api/auto/stop') { saveSettings({enabled:false});
       return json(res,200, stopWatching()); }
     res.writeHead(404); res.end('not found');

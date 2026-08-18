@@ -18,3 +18,18 @@ export function makeProvider() {
   // staticNetwork avoids an extra round-trip per call.
   return new ethers.JsonRpcProvider(url, net, { staticNetwork: true });
 }
+
+/**
+ * WebSocket provider for chain scanner block subscriptions only.
+ * HTTP makeProvider() remains for quotes, reads, and tx broadcast.
+ */
+export function makeEventProvider() {
+  const { ALCHEMY_WSS_URL, ALCHEMY_KEY, CHAIN_ID } = process.env;
+  let url = ALCHEMY_WSS_URL?.trim();
+  if (!url && ALCHEMY_KEY) {
+    url = `wss://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`;
+  }
+  if (!url || !url.startsWith('ws')) return null;
+  const net = CHAIN_ID ? { chainId: Number(CHAIN_ID), name: 'robinhood' } : undefined;
+  return new ethers.WebSocketProvider(url, net, { staticNetwork: true });
+}

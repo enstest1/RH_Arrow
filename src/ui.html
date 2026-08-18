@@ -132,7 +132,7 @@
     </div>
     <div class="tabbar">
       <button type="button" class="tab active" id="tabbtn-mint" data-tab="mint">NFT Minter</button>
-      <button type="button" class="tab" id="tabbtn-x" data-tab="x">X Scraper</button>
+      <button type="button" class="tab" id="tabbtn-x" data-tab="x">Launch Scanner</button>
     </div>
     <div class="body">
 
@@ -219,7 +219,15 @@
       <div id="tab-x" class="tabpanel">
 
       <fieldset>
-        <legend>Auto-buy from X (LIVE — funds at risk)</legend>
+        <legend>Launch Scanner / Auto-Buy (LIVE)</legend>
+
+        <div class="row"><span class="k">Target ticker</span>
+          <input id="ab_target" class="txtsm" placeholder="CLOCKIN" value="CLOCKIN"></div>
+
+        <div class="row"><span class="k">On-chain scanner (PRIMARY)</span>
+          <span class="v"><input type="checkbox" id="ab_chain_on" checked> enabled</span></div>
+        <div class="row"><span class="k">X scraper (FALLBACK)</span>
+          <span class="v"><input type="checkbox" id="ab_x_on" checked> enabled</span></div>
 
         <label class="lbl">Watch X handles (comma separated, no @)</label>
         <input id="ab_handles" class="txt" placeholder="clockincoin" value="clockincoin">
@@ -228,6 +236,22 @@
           <input id="ab_spend" class="txtsm" placeholder="0.01" value="0.01"></div>
         <div class="row"><span class="k">Slippage tolerance %</span>
           <input id="ab_tol" class="txtsm" placeholder="15" value="15"></div>
+        <div class="row"><span class="k">Max launch tax %</span>
+          <input id="ab_maxtax" class="txtsm" placeholder="15" value="15"></div>
+
+        <div class="row"><span class="k">Routes — launcher</span><span class="v" id="ab_route_launcher">—</span></div>
+        <div class="row"><span class="k">Routes — aggregator</span><span class="v" id="ab_route_agg">—</span></div>
+        <div class="row"><span class="k">Routes — v4</span><span class="v" id="ab_route_v4">—</span></div>
+        <div class="row"><span class="k">Aggregator proxy</span><span class="v mono" id="ab_agg_proxy">—</span></div>
+        <div class="row"><span class="k">Aggregator impl</span><span class="v mono" id="ab_agg_impl">—</span></div>
+        <div class="row"><span class="k">Impl validated</span><span class="v" id="ab_agg_valid">—</span></div>
+        <div class="row"><span class="k">Aggregator fee</span><span class="v" id="ab_agg_fee">—</span></div>
+
+        <div class="row"><span class="k">Chain WebSocket</span><span class="v" id="ab_ws">—</span></div>
+        <div class="row"><span class="k">Chain mode</span><span class="v" id="ab_chainmode">—</span></div>
+        <div class="row"><span class="k">Latest / last block</span><span class="v" id="ab_block">—</span></div>
+        <div class="row"><span class="k">Watched launch addresses</span><span class="v" id="ab_watchn">—</span></div>
+        <div class="row"><span class="k">Pending target</span><span class="v mono" id="ab_pending">—</span></div>
 
         <div class="row"><span class="k">Watching</span><span class="v good" id="ab_watching">—</span></div>
         <div class="row"><span class="k">Wallet</span><span class="v mono" id="ab_wallet">—</span></div>
@@ -236,9 +260,12 @@
         <div class="row"><span class="k">Status</span><span class="v" id="ab_status">stopped</span></div>
         <div class="row"><span class="k">Total spent</span><span class="v" id="ab_spent">—</span></div>
 
+        <label class="lbl" style="margin-top:6px;">Watched launch addresses (JSON array)</label>
+        <textarea id="ab_watchlist" class="txt" rows="6" style="font-size:10px;"></textarea>
+
         <div class="btns" style="margin-top:6px;">
           <button class="b" id="ab_save">Save settings</button>
-          <button class="b primary" id="ab_start">Start watching</button>
+          <button class="b primary" id="ab_start">Start Watching</button>
           <button class="b" id="ab_stop">Stop</button>
         </div>
         <div id="ab_err" class="note" style="margin-top:4px;color:#800;"></div>
@@ -249,7 +276,8 @@
         </div>
 
         <p class="note">
-          Polls every 30s (set AUTO_POLL_SEC in .env to change). Faster = more 429 rate limits from X.
+          Chain scanner is PRIMARY (WebSocket blocks). X polls every 30s (AUTO_POLL_SEC). Both feed the same buy pipeline.
+          Audit log: autobuy-events.jsonl
         </p>
       </fieldset>
 
@@ -431,6 +459,13 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
     if (active !== 'ab_handles') ab$('ab_handles').value = (s.handles || []).join(', ');
     if (active !== 'ab_spend') ab$('ab_spend').value = s.maxSpendEth || '';
     if (active !== 'ab_tol') ab$('ab_tol').value = s.slippageTolerancePct || '';
+    if (active !== 'ab_maxtax') ab$('ab_maxtax').value = s.maxLaunchTaxPct || '';
+    if (active !== 'ab_target') ab$('ab_target').value = s.targetSymbol || 'CLOCKIN';
+    if (active !== 'ab_chain_on') ab$('ab_chain_on').checked = s.chainEnabled !== false;
+    if (active !== 'ab_x_on') ab$('ab_x_on').checked = s.xEnabled !== false;
+    if (active !== 'ab_watchlist' && s.chainWatchlist) {
+      ab$('ab_watchlist').value = JSON.stringify(s.chainWatchlist, null, 2);
+    }
   }
 
   async function abRefresh() {
@@ -442,6 +477,14 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       ab$('ab_watching').textContent = st.watching && handles.length
         ? handles.join(', ')
         : (handles.length ? handles.join(', ') + ' (stopped)' : '—');
+      ab$('ab_ws').textContent = st.wsConnected ? 'CONNECTED' : (st.chainWatching ? 'disconnected' : '—');
+      ab$('ab_ws').className = 'v' + (st.wsConnected ? ' good' : (st.chainWatching ? ' bad' : ''));
+      ab$('ab_chainmode').textContent = st.chainMode || '—';
+      ab$('ab_block').textContent = st.lastProcessedBlock != null ? String(st.lastProcessedBlock) : '—';
+      ab$('ab_watchn').textContent = st.watchAddressCount != null ? String(st.watchAddressCount) : '—';
+      ab$('ab_pending').textContent = st.pendingTarget
+        ? (st.pendingTarget.symbol + ' ' + st.pendingTarget.contract.slice(0, 10) + '…')
+        : '—';
       ab$('ab_wallet').textContent = st.wallet
         ? (st.wallet.slice(0, 6) + '…' + st.wallet.slice(-4))
         : 'NO PRIVATE_KEY in .env';
@@ -449,6 +492,16 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       ab$('ab_balance').textContent = st.balanceEth != null ? st.balanceEth.toFixed(5) + ' ETH' : '—';
       ab$('ab_quoter').textContent = st.quoterSet ? 'yes' : 'NO — set V4_QUOTER in .env';
       ab$('ab_quoter').className = 'v' + (st.quoterSet ? ' good' : ' bad');
+      const routes = st.routes || {};
+      ab$('ab_route_launcher').textContent = routes.launcher || '—';
+      ab$('ab_route_agg').textContent = routes.aggregator || '—';
+      ab$('ab_route_v4').textContent = routes.v4 ? String(routes.v4) : '—';
+      const agg = st.aggregator || {};
+      ab$('ab_agg_proxy').textContent = agg.proxy ? (agg.proxy.slice(0, 10) + '…') : '—';
+      ab$('ab_agg_impl').textContent = agg.implementation ? (agg.implementation.slice(0, 10) + '…') : '—';
+      ab$('ab_agg_valid').textContent = agg.validated ? 'YES' : 'NO';
+      ab$('ab_agg_valid').className = 'v' + (agg.validated ? ' good' : ' bad');
+      ab$('ab_agg_fee').textContent = agg.feeBps != null ? (agg.feeBps / 100).toFixed(2) + '%' : '—';
       ab$('ab_status').textContent = st.watching ? 'WATCHING — LIVE' : 'stopped';
       ab$('ab_status').className = 'v' + (st.watching ? ' good' : '');
       ab$('ab_spent').textContent = (st.totalSpentEth || 0).toFixed(5) + ' ETH';
@@ -467,18 +520,31 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
   }
 
   function collect() {
+    let chainWatchlist = [];
+    try {
+      chainWatchlist = JSON.parse(ab$('ab_watchlist').value || '[]');
+    } catch (e) {
+      throw new Error('Watch list JSON invalid: ' + e.message);
+    }
     return {
       enabled: true,
+      targetSymbol: ab$('ab_target').value.trim(),
+      chainEnabled: ab$('ab_chain_on').checked,
+      xEnabled: ab$('ab_x_on').checked,
+      chainWatchlist,
       handles: ab$('ab_handles').value.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean),
       maxSpendEth: ab$('ab_spend').value.trim(),
       slippageTolerancePct: ab$('ab_tol').value.trim(),
+      maxLaunchTaxPct: ab$('ab_maxtax').value.trim(),
     };
   }
 
   ab$('ab_save').onclick = async () => {
-    const res = await abPost('/api/auto/settings', collect());
-    ab$('ab_err').textContent = (res.errors || []).join(' · ');
-    abRefresh();
+    try {
+      const res = await abPost('/api/auto/settings', collect());
+      ab$('ab_err').textContent = (res.errors || []).join(' · ');
+      abRefresh();
+    } catch (e) { ab$('ab_err').textContent = e.message; }
   };
 
   ab$('ab_start').onclick = async () => {
