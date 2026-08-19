@@ -9,7 +9,6 @@ import {
   ENDPOINTS,
   BASE_HEADERS,
   GRAPHQL_FEATURES,
-  loadCookiesFromFile,
   extractAuthCredentials,
   extractCsrfFromSetCookie,
   cookiesToString,
@@ -18,6 +17,7 @@ import {
   parseUser,
 } from 'goat-x-pro';
 import { ClientTransaction, handleXMigration } from 'x-client-transaction-id';
+import { loadXCookies } from './xcookies.js';
 
 /** pro.x.com GraphQL often 401 without X Pro — try x.com first. */
 const GQL_HOST = 'https://x.com/i/api/graphql';
@@ -63,7 +63,7 @@ function cookiesPath() {
  * @param {string} [path]
  */
 export async function refreshXAuth(path = cookiesPath()) {
-  const cookies = await loadCookiesFromFile(path);
+  const cookies = await loadXCookies(path);
   let auth = extractAuthCredentials(cookies);
 
   const response = await fetch('https://x.com/home', {

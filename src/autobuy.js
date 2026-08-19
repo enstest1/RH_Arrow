@@ -101,15 +101,18 @@ function walletOrNull() {
   return _wallet;
 }
 
+/**
+ * Optional XProClient for non-poll helpers. Cookies are loaded with Node fs
+ * so goat-x-pro's Bun.file() path is never used.
+ */
 async function getXClient() {
   if (_xclient) return _xclient;
+  const { loadXCookies } = await import('./xcookies.js');
   const mod = await import('goat-x-pro');
   const XProClient = mod.XProClient || mod.default?.XProClient;
   if (!XProClient) throw new Error('goat-x-pro: XProClient export not found');
-  const opts = {};
-  if (process.env.X_COOKIES_JSON?.trim()) opts.cookies = JSON.parse(process.env.X_COOKIES_JSON);
-  else opts.cookiesPath = process.env.X_COOKIES_PATH || './cookies.json';
-  _xclient = new XProClient(opts);
+  const cookies = await loadXCookies(process.env.X_COOKIES_PATH || './cookies.json');
+  _xclient = new XProClient({ cookies });
   await _xclient.login();
   log('[X] client logged in');
   return _xclient;
@@ -482,7 +485,8 @@ async function pollOnce() {
   const settings = getSettings();
   if (!settings.xEnabled || !settings.handles?.length) return;
 
-  await getXClient();
+  // fetchHandleTweets loads cookies via Node fs — do not call XProClient here
+  // (goat-x-pro login used Bun.file when given cookiesPath).
   for (const raw of settings.handles) {
     const handle = String(raw).replace(/^@/, '').trim();
     if (!handle) continue;
@@ -599,6 +603,10 @@ export async function readAutoStatus() {
     scannerMode: chain.scannerMode || chain.chainMode,
     wsConnected: chain.wsConnected,
     lastProcessedBlock: chain.lastProcessedBlock,
+    httpHead: chain.httpHead,
+    wssLastBlock: chain.wssLastBlock,
+    lag: chain.lag,
+    wssLag: chain.wssLag,
     lastChainSignal: chain.lastChainSignal,
     aggregator: agg,
     routes: getRouteCapabilityHints(),

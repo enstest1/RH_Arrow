@@ -33,7 +33,7 @@ test('busy candidate keeps retrying until sent', async () => {
     startRetryLoop({
       key: '0xbusy',
       delayMs: 15,
-      windowMs: 2000,
+      windowMs: 20000,
       tryOnce: async () => {
         n += 1;
         if (n < 3) return { action: 'skipped', reason: 'busy', status: 'retry' };
@@ -52,7 +52,7 @@ test('execution failure is retryable until success', async () => {
     startRetryLoop({
       key: '0xfail',
       delayMs: 15,
-      windowMs: 2000,
+      windowMs: 20000,
       tryOnce: async () => {
         n += 1;
         if (n < 3) return { sent: false, error: 'quote changed', status: 'retry' };

@@ -255,6 +255,9 @@
 
         <div class="row"><span class="k">Chain WebSocket</span><span class="v" id="ab_ws">—</span></div>
         <div class="row"><span class="k">Chain mode</span><span class="v" id="ab_chainmode">—</span></div>
+        <div class="row"><span class="k">HTTP head</span><span class="v" id="ab_httphead">—</span></div>
+        <div class="row"><span class="k">WSS last block</span><span class="v" id="ab_wssblock">—</span></div>
+        <div class="row"><span class="k">Scanner lag</span><span class="v" id="ab_lag">—</span></div>
         <div class="row"><span class="k">Latest / last block</span><span class="v" id="ab_block">—</span></div>
         <div class="row"><span class="k">Watched launch addresses</span><span class="v" id="ab_watchn">—</span></div>
         <div class="row"><span class="k">Pending target</span><span class="v mono" id="ab_pending">—</span></div>
@@ -486,6 +489,11 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       ab$('ab_ws').textContent = st.wsConnected ? 'CONNECTED' : (st.chainWatching ? 'disconnected' : '—');
       ab$('ab_ws').className = 'v' + (st.wsConnected ? ' good' : (st.chainWatching ? ' bad' : ''));
       ab$('ab_chainmode').textContent = st.scannerMode || st.chainMode || '—';
+      ab$('ab_httphead').textContent = st.httpHead != null ? String(st.httpHead) : '—';
+      ab$('ab_wssblock').textContent = st.wssLastBlock != null ? String(st.wssLastBlock) : '—';
+      const lagTxt = st.lag != null ? (String(st.lag) + ' blocks' + (st.wssLag != null ? ' (wss ' + st.wssLag + ')' : '')) : '—';
+      ab$('ab_lag').textContent = lagTxt;
+      ab$('ab_lag').className = 'v' + (st.lag > 8 ? ' bad' : (st.lag != null ? ' good' : ''));
       ab$('ab_block').textContent = st.lastProcessedBlock != null ? String(st.lastProcessedBlock) : '—';
       ab$('ab_watchn').textContent = st.watchAddressCount != null ? String(st.watchAddressCount) : '—';
       ab$('ab_pending').textContent = st.pendingTarget

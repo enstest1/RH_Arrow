@@ -133,8 +133,14 @@ export function getLastProcessedBlock() {
   return cache.lastProcessedBlock;
 }
 
-export function setLastProcessedBlock(n) {
+/**
+ * @param {number} n
+ * @param {{ persist?: boolean }} [opts] persist=false keeps the in-memory cursor
+ * without a sync disk write (catch-up batches persist once at the end).
+ */
+export function setLastProcessedBlock(n, opts = {}) {
   cache.lastProcessedBlock = n;
+  if (opts.persist === false) return;
   write(cache);
 }
 
