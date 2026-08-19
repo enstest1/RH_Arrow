@@ -113,6 +113,16 @@ test('insufficient balance respected', () => {
   assert.equal(v.reason, 'insufficient_balance');
 });
 
+test('evaluateBuy uses injected spendWei for AUTO-SAFE sized input', () => {
+  const v = evaluateBuy(ctx({
+    spendWei: ethToWei('0.0095'),
+    gasReserveWei: ethToWei('0.0015'),
+    walletBalanceWei: ethToWei('0.011'),
+  }));
+  assert.equal(v.ok, true);
+  assert.equal(v.spendWei, ethToWei('0.0095'));
+});
+
 test('no route refused', () => {
   assert.equal(evaluateBuy(ctx({ quote: null })).reason, 'no_route');
 });

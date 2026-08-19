@@ -20,6 +20,9 @@ export const TERMINAL_REASONS = new Set([
   'unsupported_route_venue',
   'unsupported_swap_type',
   'launch_tax_too_high',
+  'stale_chain_candidate',
+  'scanner_live_stale',
+  'insufficient_safe_budget',
 ]);
 
 /**

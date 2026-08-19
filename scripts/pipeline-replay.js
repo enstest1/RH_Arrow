@@ -212,4 +212,4 @@ for (const r of table) {
 const detectPass = table.filter((r) => r.detect && r.candidate).length;
 console.log('\nDetection+candidate: ' + detectPass + '/' + table.length);
 console.log('Route+sim: ' + table.filter((r) => r.simulation).length + '/' + table.length);
-process.exitCode = detectPass === table.length ? 0 : 1;
+process.exit(detectPass === table.length && table.every((r) => r.simulation) ? 0 : 1);

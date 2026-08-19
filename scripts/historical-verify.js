@@ -118,4 +118,4 @@ for (const t of TARGETS) {
 }
 
 console.log(`Summary: ${pass}/${TARGETS.length} PASS`);
-process.exitCode = pass === TARGETS.length ? 0 : 1;
+process.exit(pass === TARGETS.length ? 0 : 1);

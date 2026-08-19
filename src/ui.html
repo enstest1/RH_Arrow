@@ -232,8 +232,9 @@
         <label class="lbl">Watch X handles (comma separated, no @)</label>
         <input id="ab_handles" class="txt" placeholder="clockincoin" value="clockincoin">
 
-        <div class="row"><span class="k">Spend per buy (ETH)</span>
-          <input id="ab_spend" class="txtsm" placeholder="0.01" value="0.01"></div>
+        <div class="row"><span class="k">Total buy budget (ETH)</span>
+          <input id="ab_spend" class="txtsm" placeholder="0.011" value="0.011"></div>
+        <div class="row"><span class="k">Buy sizing</span><span class="v" id="ab_buymode">AUTO-SAFE</span></div>
         <div class="row"><span class="k">Slippage tolerance %</span>
           <input id="ab_tol" class="txtsm" placeholder="15" value="15"></div>
         <div class="row"><span class="k">Launch tax protection</span><span class="v" id="ab_taxprot">unavailable</span></div>
@@ -253,21 +254,37 @@
         <div class="row"><span class="k">Aggregator fee</span><span class="v" id="ab_agg_fee">—</span></div>
         <div class="row"><span class="k">Fee source</span><span class="v" id="ab_agg_feesrc">—</span></div>
 
-        <div class="row"><span class="k">Chain WebSocket</span><span class="v" id="ab_ws">—</span></div>
+        <div class="row"><span class="k">Status</span><span class="v" id="ab_status">stopped</span></div>
+        <div class="row"><span class="k">AUTO BUY state</span><span class="v" id="ab_armed">DISARMED</span></div>
+        <div class="row"><span class="k">Scanner health</span><span class="v" id="ab_livehealth">—</span></div>
         <div class="row"><span class="k">Chain mode</span><span class="v" id="ab_chainmode">—</span></div>
+        <div class="row"><span class="k">Active HTTP provider</span><span class="v" id="ab_httpprov">—</span></div>
+        <div class="row"><span class="k">Active WSS provider</span><span class="v" id="ab_wssprov">—</span></div>
         <div class="row"><span class="k">HTTP head</span><span class="v" id="ab_httphead">—</span></div>
+        <div class="row"><span class="k">Live scanned</span><span class="v" id="ab_livescan">—</span></div>
+        <div class="row"><span class="k">LIVE LAG</span><span class="v" id="ab_livelag">—</span></div>
         <div class="row"><span class="k">WSS last block</span><span class="v" id="ab_wssblock">—</span></div>
-        <div class="row"><span class="k">Scanner lag</span><span class="v" id="ab_lag">—</span></div>
-        <div class="row"><span class="k">Latest / last block</span><span class="v" id="ab_block">—</span></div>
+        <div class="row"><span class="k">WSS LAG</span><span class="v" id="ab_wsslag">—</span></div>
+        <div class="row"><span class="k">Background cursor</span><span class="v" id="ab_block">—</span></div>
+        <div class="row"><span class="k">BACKGROUND LAG</span><span class="v" id="ab_bglag">—</span></div>
+        <div class="row"><span class="k">RPC rate-limited</span><span class="v" id="ab_rpc429">—</span></div>
+        <div class="row"><span class="k">Chain WebSocket</span><span class="v" id="ab_ws">—</span></div>
+        <div class="row"><span class="k">X poll</span><span class="v" id="ab_xpoll">—</span></div>
+        <div class="row"><span class="k">Target</span><span class="v" id="ab_targetshow">CLOCKIN</span></div>
         <div class="row"><span class="k">Watched launch addresses</span><span class="v" id="ab_watchn">—</span></div>
         <div class="row"><span class="k">Pending target</span><span class="v mono" id="ab_pending">—</span></div>
         <div class="row"><span class="k">Pending retries</span><span class="v mono" id="ab_retries">—</span></div>
 
         <div class="row"><span class="k">Watching</span><span class="v good" id="ab_watching">—</span></div>
         <div class="row"><span class="k">Wallet</span><span class="v mono" id="ab_wallet">—</span></div>
-        <div class="row"><span class="k">Balance</span><span class="v" id="ab_balance">—</span></div>
+        <div class="row"><span class="k">Wallet balance</span><span class="v" id="ab_balance">—</span></div>
+        <div class="row"><span class="k">Total budget cap</span><span class="v" id="ab_spendshow">—</span></div>
+        <div class="row"><span class="k">Estimated gas reserve</span><span class="v" id="ab_gasres">—</span></div>
+        <div class="row"><span class="k">Safe token input</span><span class="v" id="ab_safebuy">—</span></div>
+        <div class="row"><span class="k">Worst-case total</span><span class="v" id="ab_worst">—</span></div>
+        <div class="row"><span class="k">Budget headroom</span><span class="v" id="ab_headroom">—</span></div>
+        <div class="row"><span class="k">Slippage</span><span class="v" id="ab_slipshow">—</span></div>
         <div class="row"><span class="k">Quoter configured</span><span class="v" id="ab_quoter">—</span></div>
-        <div class="row"><span class="k">Status</span><span class="v" id="ab_status">stopped</span></div>
         <div class="row"><span class="k">Total spent</span><span class="v" id="ab_spent">—</span></div>
 
         <label class="lbl" style="margin-top:6px;">Watched launch addresses (JSON array)</label>
@@ -467,7 +484,7 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
   function fillSettings(s) {
     const active = document.activeElement?.id || '';
     if (active !== 'ab_handles') ab$('ab_handles').value = (s.handles || []).join(', ');
-    if (active !== 'ab_spend') ab$('ab_spend').value = s.maxSpendEth || '';
+    if (active !== 'ab_spend') ab$('ab_spend').value = s.totalBuyBudgetEth || s.maxSpendEth || '0.011';
     if (active !== 'ab_tol') ab$('ab_tol').value = s.slippageTolerancePct || '';
     if (active !== 'ab_target') ab$('ab_target').value = s.targetSymbol || 'CLOCKIN';
     if (active !== 'ab_chain_on') ab$('ab_chain_on').checked = s.chainEnabled !== false;
@@ -490,11 +507,18 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       ab$('ab_ws').className = 'v' + (st.wsConnected ? ' good' : (st.chainWatching ? ' bad' : ''));
       ab$('ab_chainmode').textContent = st.scannerMode || st.chainMode || '—';
       ab$('ab_httphead').textContent = st.httpHead != null ? String(st.httpHead) : '—';
+      ab$('ab_livescan').textContent = st.latestLiveScannedBlock != null ? String(st.latestLiveScannedBlock) : '—';
+      ab$('ab_livelag').textContent = st.liveLag != null ? String(st.liveLag) : '—';
+      ab$('ab_livelag').className = 'v' + (st.liveLag > 2 ? ' bad' : (st.liveLag != null ? ' good' : ''));
       ab$('ab_wssblock').textContent = st.wssLastBlock != null ? String(st.wssLastBlock) : '—';
-      const lagTxt = st.lag != null ? (String(st.lag) + ' blocks' + (st.wssLag != null ? ' (wss ' + st.wssLag + ')' : '')) : '—';
-      ab$('ab_lag').textContent = lagTxt;
-      ab$('ab_lag').className = 'v' + (st.lag > 8 ? ' bad' : (st.lag != null ? ' good' : ''));
-      ab$('ab_block').textContent = st.lastProcessedBlock != null ? String(st.lastProcessedBlock) : '—';
+      ab$('ab_wsslag').textContent = st.wssLag != null ? String(st.wssLag) : '—';
+      ab$('ab_wsslag').className = 'v' + (st.wssLag > 8 ? ' bad' : (st.wssLag != null ? ' good' : ''));
+      ab$('ab_block').textContent = (st.contiguousHistoricalBlock ?? st.lastProcessedBlock) != null
+        ? String(st.contiguousHistoricalBlock ?? st.lastProcessedBlock) : '—';
+      ab$('ab_bglag').textContent = st.backgroundLag != null ? String(st.backgroundLag) : '—';
+      const health = st.liveStatus || st.scannerHealth || '—';
+      ab$('ab_livehealth').textContent = health + (st.chainBuyBlocked ? ' (chain buys blocked)' : '');
+      ab$('ab_livehealth').className = 'v' + (health === 'CURRENT' ? ' good' : (health === 'STALE' ? ' bad' : ''));
       ab$('ab_watchn').textContent = st.watchAddressCount != null ? String(st.watchAddressCount) : '—';
       ab$('ab_pending').textContent = st.pendingTarget
         ? (st.pendingTarget.symbol + ' ' + st.pendingTarget.contract.slice(0, 10) + '…')
@@ -538,8 +562,35 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
         : (feeRaw != null ? ('raw ' + feeRaw + ' (unit unverified)') : '—');
       ab$('ab_agg_fee').textContent = feeLabel;
       ab$('ab_agg_feesrc').textContent = [agg.feeSource, agg.feeUnit].filter(Boolean).join(', ') || '—';
-      ab$('ab_status').textContent = st.watching ? 'WATCHING — LIVE' : 'stopped';
-      ab$('ab_status').className = 'v' + (st.watching ? ' good' : '');
+      ab$('ab_status').textContent = st.watching
+        ? (st.armed ? 'WATCHING — ARMED' : 'WATCHING — DISARMED')
+        : 'stopped';
+      ab$('ab_status').className = 'v' + (st.watching && st.armed ? ' good' : (st.watching ? '' : ''));
+      const armedEl = ab$('ab_armed');
+      if (armedEl) {
+        armedEl.textContent = st.autoBuyState || (st.armed ? 'ARMED' : 'DISARMED');
+        armedEl.className = 'v' + (st.armed ? ' bad' : ' good');
+      }
+      if (ab$('ab_httpprov')) ab$('ab_httpprov').textContent = st.activeHttpProvider || '—';
+      if (ab$('ab_wssprov')) ab$('ab_wssprov').textContent = st.activeWssProvider || '—';
+      if (ab$('ab_rpc429')) {
+        ab$('ab_rpc429').textContent = st.rpcRateLimited ? 'yes' : 'no';
+        ab$('ab_rpc429').className = 'v' + (st.rpcRateLimited ? ' bad' : ' good');
+      }
+      if (ab$('ab_xpoll')) {
+        const xp = st.xPoll || {};
+        ab$('ab_xpoll').textContent = xp.healthy === true ? 'healthy' : (xp.healthy === false ? ('error: ' + (xp.error || 'fail')) : '—');
+        ab$('ab_xpoll').className = 'v' + (xp.healthy === true ? ' good' : (xp.healthy === false ? ' bad' : ''));
+      }
+      if (ab$('ab_targetshow')) ab$('ab_targetshow').textContent = st.targetSymbol || '—';
+      if (ab$('ab_buymode')) ab$('ab_buymode').textContent = (st.buySizeMode || 'auto-safe').toUpperCase();
+      if (ab$('ab_spendshow')) ab$('ab_spendshow').textContent = (st.totalBuyBudgetEth || st.spendEth || st.settings?.totalBuyBudgetEth || '—') + ' ETH';
+      const b = st.budget || {};
+      if (ab$('ab_gasres')) ab$('ab_gasres').textContent = (b.gasReserveEth || st.gasReserveEth || '—') + (b.gasReserveEth ? ' ETH' : '');
+      if (ab$('ab_safebuy')) ab$('ab_safebuy').textContent = (b.safeTokenInputEth || st.safeTokenInputEth || '—') + (b.safeTokenInputEth ? ' ETH' : '');
+      if (ab$('ab_worst')) ab$('ab_worst').textContent = (b.worstCaseTotalEth || st.worstCaseTotalEth || '—') + (b.worstCaseTotalEth ? ' ETH' : '');
+      if (ab$('ab_headroom')) ab$('ab_headroom').textContent = (b.headroomEth || st.budgetHeadroomEth || '—') + (b.headroomEth ? ' ETH' : '');
+      if (ab$('ab_slipshow')) ab$('ab_slipshow').textContent = (st.slippageTolerancePct || st.settings?.slippageTolerancePct || '—') + '%';
       ab$('ab_spent').textContent = (st.totalSpentEth || 0).toFixed(5) + ' ETH';
       const logEl = ab$('ab_log');
       if (logEl) {
@@ -570,6 +621,8 @@ setInterval(()=>{ if(!poll && activeTab==='mint') refresh(); },4000);
       chainWatchlist,
       handles: ab$('ab_handles').value.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean),
       maxSpendEth: ab$('ab_spend').value.trim(),
+      totalBuyBudgetEth: ab$('ab_spend').value.trim(),
+      buySizeMode: 'auto-safe',
       slippageTolerancePct: ab$('ab_tol').value.trim(),
       maxLaunchTaxPct: '',
     };

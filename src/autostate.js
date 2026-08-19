@@ -12,7 +12,10 @@ const FILE = process.env.AUTOBUY_STATE_PATH || path.resolve(process.cwd(), 'auto
 const BLANK = {
   settings: {
     enabled: false,
-    maxSpendEth: '',
+    buySizeMode: 'auto-safe',
+    totalBuyBudgetEth: process.env.TOTAL_BUY_BUDGET_ETH || '0.011',
+    maxSpendEth: process.env.TOTAL_BUY_BUDGET_ETH || '0.011',
+    gasReserveMultiplier: process.env.GAS_RESERVE_MULTIPLIER || '1.5',
     slippageTolerancePct: '',
     xEnabled: true,
     handles: [],

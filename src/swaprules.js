@@ -87,8 +87,9 @@ export function minOutWei(quotedOut, tolerancePct) {
  */
 export function validateSettings(s) {
   const errors = [];
-  const spend = Number(s?.maxSpendEth);
-  if (!s?.maxSpendEth || !Number.isFinite(spend) || spend <= 0) {
+  const budgetRaw = s?.totalBuyBudgetEth || s?.maxSpendEth;
+  const spend = Number(budgetRaw);
+  if (!budgetRaw || !Number.isFinite(spend) || spend <= 0) {
     errors.push('Spend per buy (ETH) must be set and greater than 0');
   }
   const tol = Number(s?.slippageTolerancePct);
@@ -160,7 +161,7 @@ export function evaluateBuy(ctx) {
     return { ok: false, reason: 'already_bought', detail: 'This contract was already bought' };
   }
 
-  const spendWei = ethToWei(s.maxSpendEth);
+  const spendWei = ctx.spendWei != null ? ctx.spendWei : ethToWei(s.maxSpendEth || s.totalBuyBudgetEth);
   if (spendWei <= 0n) return { ok: false, reason: 'unconfigured', detail: 'Spend per buy is 0' };
 
   const balance = ctx.walletBalanceWei ?? 0n;

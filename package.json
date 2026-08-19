@@ -13,7 +13,9 @@
     "test": "node --test --test-timeout=30000 tests/",
     "test:historical": "node scripts/historical-verify.js",
     "test:pipeline": "node scripts/pipeline-replay.js",
-    "test:agg-fixtures": "node scripts/verify-aggregator-fixtures.js"
+    "test:agg-fixtures": "node scripts/verify-aggregator-fixtures.js",
+    "prearm": "node scripts/prearm-check.js",
+    "soak": "node scripts/detect-soak.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

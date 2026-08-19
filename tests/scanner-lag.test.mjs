@@ -14,6 +14,8 @@ process.env.AUTOBUY_STATE_PATH = path.join(dir, 'state.json');
 process.env.AUTOBUY_AUDIT_PATH = path.join(dir, 'audit.jsonl');
 process.env.CHAIN_CATCHUP_BATCH = '8';
 process.env.CHAIN_WSS_STALE_MS = '50';
+process.env.CHAIN_LIVE_RECOVERY_WINDOW = '24';
+process.env.CHAIN_LIVE_RECOVERY_BATCH = '4';
 
 const { setLastProcessedBlock } = await import('../src/autostate.js');
 const {
@@ -28,6 +30,7 @@ const {
   pendingCandidateDispatchCount,
   emulateWsDisconnectForTest,
   backdateLastWsBlockForTest,
+  emulateWsReconnectForTest,
 } = await import('../src/chainscanner.js');
 
 function settings() {
@@ -178,4 +181,68 @@ test('reconnect/catch-up does not destroy pending candidate callback', async () 
   } finally {
     resetScannerForTest();
   }
+});
+
+test('HTTP fallback scans current head before historical 101–999', async () => {
+  const order = [];
+  boot(emptyProvider(order, { default: 2 }));
+  setLastProcessedBlock(100);
+  await handleHttpHead(1000);
+  assert.equal(order[0], 1000, 'current HTTP head first');
+  const st = getChainScannerStatus();
+  assert.equal(st.latestLiveScannedBlock, 1000);
+  assert.equal(st.liveLag, 0);
+  assert.ok((st.contiguousHistoricalBlock || 0) < 1000);
+});
+
+test('recent live window inspects 101–105 after jump 100 → 105', async () => {
+  const order = [];
+  boot(emptyProvider(order));
+  setLastProcessedBlock(100);
+  await handleHttpHead(105);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(order[0], 105);
+  for (const n of [101, 102, 103, 104, 105]) {
+    assert.ok(order.includes(n), 'recent live missing ' + n);
+  }
+});
+
+test('WSS drop keeps HTTP liveLag small while background lag may be huge', async () => {
+  const order = [];
+  boot(emptyProvider(order));
+  setLastProcessedBlock(100);
+  await handleNewHead(100, { source: 'wss' });
+  emulateWsDisconnectForTest();
+  await handleHttpHead(1000);
+  const st = getChainScannerStatus();
+  assert.equal(st.scannerMode, 'http-fallback');
+  assert.equal(st.wsConnected, false);
+  assert.ok(st.liveLag != null && st.liveLag <= 2, 'liveLag=' + st.liveLag);
+  assert.ok(st.backgroundLag == null || st.backgroundLag > 2);
+});
+
+test('WSS reconnect restores websocket mode without duplicate scan', async () => {
+  const order = [];
+  boot(emptyProvider(order));
+  setLastProcessedBlock(50);
+  await handleNewHead(51, { source: 'wss' });
+  emulateWsDisconnectForTest();
+  await handleHttpHead(52);
+  emulateWsReconnectForTest();
+  await handleNewHead(52, { source: 'wss' });
+  assert.equal(getChainScannerStatus().scannerMode, 'websocket');
+  assert.equal(order.filter((n) => n === 52).length, 1);
+});
+
+test('historical catch-up is paused under RPC pressure', async () => {
+  const order = [];
+  const { notifyRpcPressure } = await import('../src/chainscanner.js');
+  boot(emptyProvider(order, { default: 2 }));
+  setLastProcessedBlock(100);
+  notifyRpcPressure(2000);
+  requestCatchUp(180);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(order.includes(101), false, 'P2 must yield under pressure');
+  await handleHttpHead(200);
+  assert.equal(order[0], 200, 'P0 head still scanned under pressure');
 });

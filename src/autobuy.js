@@ -32,7 +32,8 @@ import {
   clearPendingCandidate,
 } from './autostate.js';
 import { fetchHandleTweets, resetXTimelineCache } from './xtimeline.js';
-import { startChainScanner, stopChainScanner, getChainScannerStatus } from './chainscanner.js';
+import { startChainScanner, stopChainScanner, getChainScannerStatus, isChainBuyBlocked } from './chainscanner.js';
+import { evaluateChainCandidateFreshness } from './chainfreshness.js';
 import { auditEvent } from './auditlog.js';
 import { normAddr } from './chainwatchlist.js';
 import {
@@ -41,9 +42,18 @@ import {
   routeAsQuote,
   getAggregatorStatus,
   detectLauncherContext,
+  sizeRouteForWallet,
 } from './routes/index.js';
 import { runStartupSelfCheck } from './readiness.js';
 import { classifyCandidateResult, startRetryLoop } from './candidateretry.js';
+import {
+  estimateTxGasCost,
+  computeSafeBuy,
+  totalBudgetWei,
+  buySizeMode,
+  snapshotBudget,
+  estimateBudgetSnapshot,
+} from './buybudget.js';
 
 const CA_RE = /\b0x[a-fA-F0-9]{40}\b/;
 
@@ -62,12 +72,16 @@ function routeRetryWindowMs() {
 export const state = {
   running: false,
   watching: false,
+  /** True only after startWatching P0 self-check. Detection-only never sets this. */
+  armed: false,
   log: [],
   lastPollAt: null,
   lastError: null,
   pendingTarget: null,
   lastRouteStatus: null,
   lastReadiness: null,
+  xPoll: { healthy: null, lastAt: null, error: null },
+  lastBudget: null,
 };
 
 export function log(msg) {
@@ -92,6 +106,8 @@ const _routeRetryTimers = new Map();
 /** Bound concurrent candidate pipelines (symbol check + route discovery). */
 const MAX_CANDIDATE_PIPELINES = Math.max(1, Number(process.env.MAX_CANDIDATE_PIPELINES) || 8);
 let _candidateInFlight = 0;
+/** Same CA from chain + X must not run two pipelines. */
+const _activeCandidates = new Set();
 
 function walletOrNull() {
   const k = process.env.PRIVATE_KEY;
@@ -128,6 +144,7 @@ function stopRouteRetry(contract) {
   const h = _routeRetryTimers.get(k);
   if (h?.stop) h.stop();
   _routeRetryTimers.delete(k);
+  _activeCandidates.delete(k);
 }
 
 /**
@@ -171,6 +188,8 @@ export async function handleCandidate({ contract, source, timings = {}, dryRun =
 }
 
 async function _handleCandidateInner({ contract, source, timings = {}, dryRun = false, injectedProvider, injectedWallet }) {
+  // Detection-only / DISARMED: simulate the pipeline but never broadcast.
+  if (!dryRun && !state.armed) dryRun = true;
   const settings = getSettings();
   const w = injectedWallet || walletOrNull();
   const addr = normAddr(contract);
@@ -178,7 +197,22 @@ async function _handleCandidateInner({ contract, source, timings = {}, dryRun = 
     auditEvent('candidate_rejected', { reason: 'invalid_contract', contract });
     return { action: 'skipped', reason: 'invalid_contract', status: 'terminal' };
   }
+  const lockKey = addr.toLowerCase();
+  if (_activeCandidates.has(lockKey) || _routeRetryTimers.has(lockKey)) {
+    auditEvent('candidate_deduped', { candidateContract: addr, reason: 'in_flight' });
+    return { action: 'skipped', reason: 'duplicate_candidate' };
+  }
+  _activeCandidates.add(lockKey);
+  try {
+    return await _handleCandidateLocked({
+      addr, source, timings, dryRun, injectedProvider, injectedWallet, settings, w,
+    });
+  } finally {
+    if (!_routeRetryTimers.has(lockKey)) _activeCandidates.delete(lockKey);
+  }
+}
 
+async function _handleCandidateLocked({ addr, source, timings = {}, dryRun = false, injectedProvider, injectedWallet, settings, w }) {
   auditEvent('candidate_detected', {
     sourceType: source.type,
     sourceAddress: source.address,
@@ -202,17 +236,9 @@ async function _handleCandidateInner({ contract, source, timings = {}, dryRun = 
     return { action: 'skipped', reason: trust.reason, status: 'terminal' };
   }
 
-  if (_routeRetryTimers.has(addr.toLowerCase())) {
-    auditEvent('candidate_deduped', { candidateContract: addr, reason: 'retry_in_flight' });
-    return { action: 'skipped', reason: 'duplicate_candidate' };
-  }
-
-  if (seenCandidate(addr) && source.type === 'chain') {
-    const pending = getPendingCandidate(addr);
-    if (!pending) {
-      auditEvent('candidate_deduped', { candidateContract: addr, reason: 'seen_candidate' });
-      return { action: 'skipped', reason: 'duplicate_candidate' };
-    }
+  if (_routeRetryTimers.has(addr.toLowerCase()) || seenCandidate(addr) || getPendingCandidate(addr)) {
+    auditEvent('candidate_deduped', { candidateContract: addr, reason: 'seen_candidate' });
+    return { action: 'skipped', reason: 'duplicate_candidate', status: 'terminal' };
   }
 
   if (!w && !dryRun) {
@@ -226,6 +252,38 @@ async function _handleCandidateInner({ contract, source, timings = {}, dryRun = 
     auditEvent('candidate_rejected', { candidateContract: addr, reason: 'no_provider' });
     return { action: 'skipped', reason: 'no_provider', status: 'terminal' };
   }
+
+  if (source.type === 'chain') {
+    let currentHead = getChainScannerStatus().httpHead;
+    try {
+      const h = await provider.getBlockNumber();
+      if (Number.isFinite(Number(h))) {
+        currentHead = currentHead == null ? Number(h) : Math.max(currentHead, Number(h));
+      }
+    } catch { /* scanner head still used */ }
+    const fresh = evaluateChainCandidateFreshness({
+      source: { ...source, detectedAt: source.detectedAt || timings.candidateExtractedAt },
+      currentHead,
+      liveHealth: getChainScannerStatus().scannerHealth,
+      chainBuyBlocked: isChainBuyBlocked(),
+      dryRun,
+    });
+    if (!fresh.ok) {
+      log('[CANDIDATE] stale chain launch ignored token=' + addr
+        + ' sourceBlock=' + (fresh.sourceBlock ?? source.blockNumber)
+        + ' currentHead=' + (fresh.currentHead ?? currentHead)
+        + ' ageBlocks=' + (fresh.ageBlocks ?? 'n/a'));
+      auditEvent('candidate_rejected', {
+        candidateContract: addr,
+        reason: fresh.reason,
+        sourceBlock: fresh.sourceBlock,
+        currentHead: fresh.currentHead,
+        ageBlocks: fresh.ageBlocks,
+      });
+      return { action: 'skipped', reason: fresh.reason, status: 'terminal' };
+    }
+  }
+
   const wallet = w || { address: '0x0000000000000000000000000000000000000001', provider };
   const t0 = timings.candidateExtractedAt || Date.now();
   let meta;
@@ -304,10 +362,55 @@ export async function handleCA({ contract, handle, tweetUrl }) {
  */
 async function attemptBuyWithRouteRetry(ctx) {
   const { contract, source, meta, settings, wallet, provider, timings, label, dryRun } = ctx;
-  const spendWei = ethToWei(settings.maxSpendEth);
   const slippagePct = Number(settings.slippageTolerancePct);
   const started = Date.now();
   log('[TAX] launch tax check unavailable for this route');
+
+  /**
+   * Probe amount for discovery only. Final token input is sized after the route
+   * is known so aggregator vs V4 gas can differ.
+   * @returns {Promise<bigint>}
+   */
+  async function probeAmountWei() {
+    const walletBalanceWei = await provider.getBalance(wallet.address).catch(() => 0n);
+    const budgetWei = totalBudgetWei(settings);
+    const gas = await estimateTxGasCost(provider, null, { venue: 'aggregator', skipEstimate: true });
+    const probe = computeSafeBuy({
+      walletBalanceWei,
+      totalBudgetWei: budgetWei,
+      gasReserveWei: gas.reserve,
+    });
+    return probe.ok ? probe.buyWei : (budgetWei > 0n ? budgetWei / 2n : ethToWei('0.001'));
+  }
+
+  async function recheckFreshness() {
+    if (source.type !== 'chain') return { ok: true };
+    let currentHead = getChainScannerStatus().httpHead;
+    try {
+      const h = await provider.getBlockNumber();
+      if (Number.isFinite(Number(h))) {
+        currentHead = currentHead == null ? Number(h) : Math.max(currentHead, Number(h));
+      }
+    } catch { /* scanner head */ }
+    return evaluateChainCandidateFreshness({
+      source: { ...source, detectedAt: source.detectedAt || timings.candidateExtractedAt },
+      currentHead,
+      liveHealth: getChainScannerStatus().scannerHealth,
+      chainBuyBlocked: isChainBuyBlocked(),
+      dryRun,
+    });
+  }
+
+  async function sizeKnownRoute(route) {
+    const sized = await sizeRouteForWallet({
+      provider,
+      route,
+      settings,
+      from: wallet.address,
+    });
+    state.lastBudget = sized.snapshot || snapshotBudget(sized, { venue: route?.venue, mode: buySizeMode(settings) });
+    return sized;
+  }
 
   const tryOnce = async (attempt) => {
     if (alreadyBought(contract)) {
@@ -315,7 +418,15 @@ async function attemptBuyWithRouteRetry(ctx) {
       return { action: 'skipped', reason: 'already_bought', status: 'terminal' };
     }
 
+    const fresh = await recheckFreshness();
+    if (!fresh.ok) {
+      log('[CANDIDATE] ' + fresh.reason + ' token=' + contract);
+      auditEvent('candidate_rejected', { candidateContract: contract, reason: fresh.reason });
+      return { action: 'skipped', reason: fresh.reason, status: 'terminal' };
+    }
+
     timings.routeDiscoveryStartedAt = Date.now();
+    const spendWei = await probeAmountWei();
     const route = spendWei > 0n
       ? await discoverBestBuyRoute({
         provider,
@@ -340,16 +451,36 @@ async function attemptBuyWithRouteRetry(ctx) {
     log('[ROUTE] ' + route.venue + ' expectedOut ' + route.expectedOut.toString() + ' — attempt ' + attempt);
     state.lastRouteStatus = { contract, attempt, venue: route.venue, venues: getRouteCapabilityHints() };
 
-    // Dry-run / tests / replay: simulate only. Never sendTransaction or recordBuy.
-    if (dryRun) {
-      auditEvent('buy_dry_run', { candidateContract: contract, venue: route.venue });
+    let sized = await sizeKnownRoute(route);
+    if (!sized.ok) {
+      log('[BUDGET] ' + (sized.reason || 'insufficient_safe_budget') + ' venue=' + route.venue);
+      auditEvent('buy_gate_reject', { candidateContract: contract, reason: sized.reason || 'insufficient_safe_budget' });
+      return {
+        action: 'skipped',
+        reason: sized.reason || 'insufficient_safe_budget',
+        status: 'terminal',
+        budget: sized.snapshot,
+      };
+    }
+
+    const sizedRoute = sized.route || route;
+    log('[BUDGET] venue=' + sizedRoute.venue
+      + ' buy=' + weiToEthNum(sized.buyWei).toFixed(6)
+      + ' gasReserve=' + weiToEthNum(sized.gasReserveWei).toFixed(6)
+      + ' worstCase=' + weiToEthNum(sized.worstCaseWei).toFixed(6));
+
+    // Dry-run / tests / replay / DISARMED: simulate only. Never sendTransaction or recordBuy.
+    if (dryRun || !state.armed) {
+      if (!dryRun) log('[LIVE] DISARMED — simulation only, sendTransaction=0');
+      auditEvent('buy_dry_run', { candidateContract: contract, venue: sizedRoute.venue, budget: sized.snapshot });
       return {
         action: 'simulated',
         dryRun: true,
-        venue: route.venue,
-        simulation: route.simulation,
-        hops: route.metadata?.hops,
-        swapTypes: route.metadata?.swapTypes,
+        venue: sizedRoute.venue,
+        simulation: sizedRoute.simulation || route.simulation,
+        hops: sizedRoute.metadata?.hops || route.metadata?.hops,
+        swapTypes: sizedRoute.metadata?.swapTypes || route.metadata?.swapTypes,
+        budget: sized.snapshot,
         status: 'terminal',
       };
     }
@@ -361,17 +492,34 @@ async function attemptBuyWithRouteRetry(ctx) {
       return { action: 'skipped', reason: 'busy', status: 'retry' };
     }
 
+    // Immediate pre-send recheck: balance, head, freshness, gas, safe amount.
+    const fresh2 = await recheckFreshness();
+    if (!fresh2.ok) {
+      return { action: 'skipped', reason: fresh2.reason, status: 'terminal' };
+    }
+    sized = await sizeKnownRoute(sizedRoute);
+    if (!sized.ok) {
+      return {
+        action: 'skipped',
+        reason: sized.reason || 'insufficient_safe_budget',
+        status: 'terminal',
+        budget: sized.snapshot,
+      };
+    }
+    const sendRoute = sized.route || sizedRoute;
+
     const balance = await provider.getBalance(wallet.address);
-    const quote = routeAsQuote(route);
+    const quote = routeAsQuote(sendRoute);
     const verdict = evaluateBuy({
       settings,
       alreadyBought: alreadyBought(contract),
       walletBalanceWei: balance,
-      gasReserveWei: ethToWei('0.001'),
+      gasReserveWei: sized.gasReserveWei,
+      spendWei: sized.buyWei,
       quote,
       source,
       symbol: meta.symbol,
-      launchTaxPct: route.launchTaxPct,
+      launchTaxPct: sendRoute.launchTaxPct,
     });
 
     if (!verdict.ok) {
@@ -381,16 +529,16 @@ async function attemptBuyWithRouteRetry(ctx) {
       return { action: 'skipped', reason: verdict.reason, status };
     }
 
-    auditEvent('buy_gate_pass', { candidateContract: contract, spendWei: String(verdict.spendWei), venue: route.venue });
+    auditEvent('buy_gate_pass', { candidateContract: contract, spendWei: String(verdict.spendWei), venue: sendRoute.venue });
 
     _buying = true;
     timings.sendStartedAt = Date.now();
-    auditEvent('buy_send_started', { candidateContract: contract, venue: route.venue });
-    log('[BUY] sending ' + weiToEthNum(verdict.spendWei).toFixed(5) + ' ETH via ' + route.venue + ' of ' + label + '…');
+    auditEvent('buy_send_started', { candidateContract: contract, venue: sendRoute.venue });
+    log('[BUY] sending ' + weiToEthNum(verdict.spendWei).toFixed(5) + ' ETH via ' + sendRoute.venue + ' of ' + label + '…');
 
     try {
       const result = await executeRoute({
-        route: { ...route, amountIn: verdict.spendWei },
+        route: { ...sendRoute, amountIn: verdict.spendWei },
         wallet,
         provider,
         settings,
@@ -400,7 +548,7 @@ async function attemptBuyWithRouteRetry(ctx) {
 
       if (!result.sent) {
         log('❌ buy failed (will retry): ' + result.error);
-        auditEvent('buy_failed', { candidateContract: contract, error: result.error, venue: route.venue });
+        auditEvent('buy_failed', { candidateContract: contract, error: result.error, venue: sendRoute.venue });
         if (result.status === 'terminal' || result.reason === 'unsupported_swap_type') {
           return { action: 'failed', reason: result.reason || 'buy_failed', status: 'terminal' };
         }
@@ -417,11 +565,11 @@ async function attemptBuyWithRouteRetry(ctx) {
         handle: source.handle,
         tweetUrl: source.tweetUrl,
         chainTx: source.txHash,
-        venue: route.venue,
+        venue: sendRoute.venue,
       });
 
-      auditEvent('buy_sent', { candidateContract: contract, txHash: result.txHash, venue: route.venue });
-      log('🚀 BOUGHT ' + label + ' via ' + route.venue + ' — tx ' + result.txHash);
+      auditEvent('buy_sent', { candidateContract: contract, txHash: result.txHash, venue: sendRoute.venue });
+      log('🚀 BOUGHT ' + label + ' via ' + sendRoute.venue + ' — tx ' + result.txHash);
 
       const candMs = timings.candidateExtractedAt
         ? timings.txSubmittedAt - timings.candidateExtractedAt
@@ -439,7 +587,7 @@ async function attemptBuyWithRouteRetry(ctx) {
       }).catch((e) => log('⚠️ confirmation wait failed: ' + e.message));
 
       state.pendingTarget = null;
-      return { action: 'bought', txHash: result.txHash, venue: route.venue, status: 'sent' };
+      return { action: 'bought', txHash: result.txHash, venue: sendRoute.venue, status: 'sent' };
     } finally {
       _buying = false;
     }
@@ -511,11 +659,13 @@ async function pollOnce() {
       log('[X] polled @' + handle + ' — ' + (tweets?.length || 0) + ' tweets' +
           (newCount ? ', ' + newCount + ' new' : '') +
           (caFound ? ', ' + caFound + ' with CA' : ', no CA'));
+      state.xPoll = { healthy: true, lastAt: Date.now(), error: null, handle };
     } catch (e) {
       if (/401|403|authenticate/i.test(String(e.message))) {
         _xclient = null;
         resetXTimelineCache();
       }
+      state.xPoll = { healthy: false, lastAt: Date.now(), error: e.message, handle };
       log('[X] poll @' + handle + ': ' + e.message);
     }
     await new Promise((r) => setTimeout(r, 1200));
@@ -536,12 +686,14 @@ export async function startWatching() {
 
   if (!ready.canArm) {
     saveSettings({ enabled: false });
+    state.armed = false;
     auditEvent('live_disarmed', { failures: ready.failures });
     log('[LIVE] auto-buy DISARMED — P0 self-check failed: ' + ready.failures.join(', '));
     return { ok: false, errors: ready.failures, readiness: ready };
   }
 
   state.watching = true;
+  state.armed = true;
   log('[LIVE] target ' + normalizeSymbol(settings.targetSymbol || process.env.TARGET_SYMBOL || 'CLOCKIN'));
 
   if (settings.chainEnabled !== false && process.env.CHAIN_SCAN_ENABLED !== 'false') {
@@ -569,12 +721,43 @@ export async function startWatching() {
   return { ok: true, readiness: ready };
 }
 
+/**
+ * Detection-only: scanner + X poll, AUTO BUY remains DISARMED, sendTransaction=0.
+ * Used by prearm soak. Does not require WSS ARM checks.
+ */
+export async function startDetectionOnly() {
+  if (state.watching) return { ok: true, already: true };
+  const settings = getSettings();
+  saveSettings({ enabled: false });
+  state.armed = false;
+  state.watching = true;
+  log('[LIVE] DETECTION ONLY — AUTO BUY DISARMED');
+  if (settings.chainEnabled !== false && process.env.CHAIN_SCAN_ENABLED !== 'false') {
+    startChainScanner({
+      onCandidate: (c) => handleCandidate({ ...c, dryRun: true }),
+      log,
+      getSettings,
+    });
+  }
+  if (settings.xEnabled !== false) {
+    const handles = (settings.handles || []).map((h) => '@' + String(h).replace(/^@/, ''));
+    const pollMs = pollSec() * 1000;
+    _timer = setInterval(() => {
+      pollOnce().catch((e) => log('[X] poll cycle: ' + e.message));
+    }, pollMs);
+    log('[X] watching ' + handles.join(', ') + ' every ' + pollSec() + 's');
+    pollOnce().catch(() => {});
+  }
+  return { ok: true, armed: false };
+}
+
 export function stopWatching() {
   if (_timer) clearInterval(_timer);
   _timer = null;
   stopChainScanner();
   for (const k of [..._routeRetryTimers.keys()]) stopRouteRetry(k);
   state.watching = false;
+  state.armed = false;
   saveSettings({ enabled: false });
   log('⏹️ stopped watching');
   return { ok: true };
@@ -588,6 +771,8 @@ export async function readAutoStatus() {
   const out = {
     settings,
     watching: state.watching,
+    armed: state.armed,
+    autoBuyState: state.armed ? 'ARMED' : 'DISARMED',
     log: state.log,
     lastPollAt: state.lastPollAt,
     quoterSet: Boolean(V4_QUOTER),
@@ -603,10 +788,17 @@ export async function readAutoStatus() {
     scannerMode: chain.scannerMode || chain.chainMode,
     wsConnected: chain.wsConnected,
     lastProcessedBlock: chain.lastProcessedBlock,
+    contiguousHistoricalBlock: chain.contiguousHistoricalBlock,
+    latestLiveScannedBlock: chain.latestLiveScannedBlock,
     httpHead: chain.httpHead,
     wssLastBlock: chain.wssLastBlock,
-    lag: chain.lag,
+    liveLag: chain.liveLag,
+    lag: chain.liveLag,
+    backgroundLag: chain.backgroundLag,
     wssLag: chain.wssLag,
+    scannerHealth: chain.scannerHealth,
+    liveStatus: chain.liveStatus,
+    chainBuyBlocked: chain.chainBuyBlocked,
     lastChainSignal: chain.lastChainSignal,
     aggregator: agg,
     routes: getRouteCapabilityHints(),
@@ -618,10 +810,31 @@ export async function readAutoStatus() {
     sellabilityGate: 'optional-not-launch-gate',
     httpRpc: state.lastReadiness?.httpOk ?? null,
     wssConfigured: state.lastReadiness?.wssOk ?? null,
+    activeHttpProvider: chain.activeHttpProvider || null,
+    activeWssProvider: chain.activeWssProvider || null,
+    rpcRateLimited: Boolean(chain.provider429),
+    provider429: Boolean(chain.provider429),
+    rateLimitCount: chain.rateLimitCount || 0,
+    xPoll: state.xPoll,
+    spendEth: settings.totalBuyBudgetEth || settings.maxSpendEth,
+    buySizeMode: buySizeMode(settings),
+    totalBuyBudgetEth: ethers.formatEther(totalBudgetWei(settings)),
+    budget: state.lastBudget,
+    slippageTolerancePct: settings.slippageTolerancePct,
   };
   if (w) {
     out.wallet = w.address;
-    try { out.balanceEth = Number(ethers.formatEther(await w.provider.getBalance(w.address))); } catch {}
+    try {
+      const snap = await estimateBudgetSnapshot(w.provider, w.address, settings, state.lastRouteStatus?.venue || 'aggregator');
+      out.balanceEth = Number(ethers.formatEther(snap.walletBalanceWei));
+      out.budget = snap.snapshot;
+      out.gasReserveEth = snap.snapshot.gasReserveEth;
+      out.safeTokenInputEth = snap.snapshot.safeTokenInputEth;
+      out.worstCaseTotalEth = snap.snapshot.worstCaseTotalEth;
+      out.budgetHeadroomEth = snap.snapshot.headroomEth;
+    } catch {
+      try { out.balanceEth = Number(ethers.formatEther(await w.provider.getBalance(w.address))); } catch {}
+    }
   }
   return out;
 }

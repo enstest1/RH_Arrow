@@ -12,10 +12,22 @@ import {
   executeAggregatorSwap,
   getAggregatorStatus,
   initAggregator,
+  encodeAggregatorSwap,
 } from './aggregator.js';
+import { AGGREGATOR_PROXY } from './constants.js';
 import { listAggregatorDescriptorSets } from './poolDiscovery.js';
 import { discoverV4Route, executeV4Buy } from './v4.js';
 import { detectLauncherContext, discoverLauncherRoute } from './launcher.js';
+import { encodeV4Swap, UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI } from '../swap.js';
+import { ethers } from 'ethers';
+import {
+  estimateTxGasCost,
+  computeSafeBuy,
+  scaleRouteAmount,
+  totalBudgetWei,
+  gasReserveMultiplier,
+  snapshotBudget,
+} from '../buybudget.js';
 
 export { initAggregator, getAggregatorStatus, detectLauncherContext };
 
@@ -133,6 +145,107 @@ export async function discoverBestBuyRoute({ provider, token, amountIn, slippage
 
   auditEvent('route_not_found', { candidateContract: token });
   return null;
+}
+
+/**
+ * Build the unsigned tx that would be sent for this route. Used for estimateGas.
+ * Never broadcasts.
+ * @param {object} route
+ * @param {string} from
+ */
+export function encodeRouteTxReq(route, from) {
+  if (!route || !from) return null;
+  if (route.venue === 'aggregator' || route.kind === 'aggregator') {
+    const data = encodeAggregatorSwap({
+      descriptors: route.descriptors,
+      amountIn: route.amountIn,
+      minReturn: route.minOut || 1n,
+      deadline: route.deadline || (Math.floor(Date.now() / 1000) + deadlineSec()),
+    });
+    return { to: AGGREGATOR_PROXY, data, value: route.amountIn, from };
+  }
+  if ((route.venue === 'v4' || route.kind === 'v4') && route.quote?.poolKey) {
+    const { commands, inputs } = encodeV4Swap({
+      poolKey: route.quote.poolKey,
+      zeroForOne: route.quote.zeroForOne,
+      amountIn: route.amountIn,
+      amountOutMin: route.minOut || 1n,
+    });
+    const iface = new ethers.Interface(UNIVERSAL_ROUTER_ABI);
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSec());
+    const data = iface.encodeFunctionData('execute', [commands, inputs, deadline]);
+    return { to: UNIVERSAL_ROUTER, data, value: route.amountIn, from };
+  }
+  return { to: AGGREGATOR_PROXY, data: '0x', value: route.amountIn || 0n, from };
+}
+
+/**
+ * Recalculate token input from live balance + gas for this specific route.
+ * Re-simulates aggregator after resize. Never broadcasts.
+ */
+export async function sizeRouteForWallet({ provider, route, settings, from }) {
+  const walletBalanceWei = await provider.getBalance(from);
+  const budgetWei = totalBudgetWei(settings);
+  const multiplier = gasReserveMultiplier(settings);
+  let txReq;
+  try {
+    txReq = encodeRouteTxReq(route, from);
+  } catch (e) {
+    return {
+      ok: false,
+      reason: e.reason || 'unsupported_swap_type',
+      walletBalanceWei,
+      totalBudgetWei: budgetWei,
+    };
+  }
+  const gas = await estimateTxGasCost(provider, txReq, { venue: route.venue, multiplier });
+  const sized = computeSafeBuy({
+    walletBalanceWei,
+    totalBudgetWei: budgetWei,
+    gasReserveWei: gas.reserve,
+  });
+  if (!sized.ok) {
+    return {
+      ...sized,
+      walletBalanceWei,
+      totalBudgetWei: budgetWei,
+      gas,
+      snapshot: snapshotBudget(
+        { ...sized, walletBalanceWei, totalBudgetWei: budgetWei },
+        { multiplier, venue: route.venue, mode: 'auto-safe' },
+      ),
+    };
+  }
+  let next = scaleRouteAmount(route, sized.buyWei, Number(settings.slippageTolerancePct));
+  if ((next.venue === 'aggregator' || next.kind === 'aggregator') && next.descriptors?.length) {
+    const sim = await simulateAggregatorSwap(provider, {
+      from,
+      amountIn: next.amountIn,
+      minReturn: next.minOut,
+      descriptors: next.descriptors,
+      deadline: next.deadline || (Math.floor(Date.now() / 1000) + deadlineSec()),
+    });
+    if (sim.ok && sim.amountOut && sim.amountOut > 0n) {
+      next = {
+        ...next,
+        expectedOut: sim.amountOut,
+        minOut: minOutWei(sim.amountOut, Number(settings.slippageTolerancePct)),
+        simulation: { ok: true, reason: null },
+      };
+    }
+  }
+  return {
+    ...sized,
+    ok: true,
+    route: next,
+    gas,
+    walletBalanceWei,
+    totalBudgetWei: budgetWei,
+    snapshot: snapshotBudget(
+      { ...sized, walletBalanceWei, totalBudgetWei: budgetWei },
+      { multiplier, venue: next.venue, mode: 'auto-safe' },
+    ),
+  };
 }
 
 /**

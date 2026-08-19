@@ -66,4 +66,4 @@ for (const fx of fixtures.transactions) {
 }
 
 console.log(failed ? ('FIXTURE VERIFY FAIL ' + failed) : 'FIXTURE VERIFY PASS');
-process.exitCode = failed ? 1 : 0;
+process.exit(failed ? 1 : 0);

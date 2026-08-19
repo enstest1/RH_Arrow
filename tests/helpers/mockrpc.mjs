@@ -184,5 +184,11 @@ export function makeDiscoveryProvider(opts = {}) {
     getNetwork: async () => ({ chainId: 4663n }),
     getBlockNumber: async () => 1,
     getBalance: async () => 10n ** 18n,
+    getFeeData: async () => ({
+      maxFeePerGas: ethers.parseUnits('0.05', 'gwei'),
+      gasPrice: ethers.parseUnits('0.05', 'gwei'),
+      maxPriorityFeePerGas: ethers.parseUnits('0.01', 'gwei'),
+    }),
+    estimateGas: async () => 250000n,
   };
 }

@@ -24,7 +24,9 @@ test('classify: sent / terminal / retry', () => {
   assert.equal(classifyCandidateResult({ action: 'failed', reason: 'temporary RPC' }), 'retry');
   assert.equal(classifyCandidateResult({ action: 'skipped', reason: 'no_route', status: 'retry' }), 'retry');
   assert.equal(classifyCandidateResult({ reason: 'unsupported_swap_type', status: 'terminal' }), 'terminal');
-  assert.equal(classifyCandidateResult({ reason: 'launch_tax_too_high' }), 'terminal');
+  assert.equal(classifyCandidateResult({ reason: 'stale_chain_candidate', status: 'terminal' }), 'terminal');
+  assert.equal(classifyCandidateResult({ reason: 'scanner_live_stale', status: 'terminal' }), 'terminal');
+  assert.equal(classifyCandidateResult({ action: 'skipped', reason: 'insufficient_safe_budget' }), 'terminal');
 });
 
 test('busy candidate keeps retrying until sent', async () => {
@@ -88,7 +90,7 @@ test('retry loop never overlaps tryOnce', async () => {
     startRetryLoop({
       key: '0xoverlap',
       delayMs: 8,
-      windowMs: 5000,
+      windowMs: 20000,
       tryOnce: async () => {
         ticks += 1;
         concurrent += 1;

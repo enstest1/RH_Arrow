@@ -4,7 +4,7 @@
  * P0 failures prevent ARMED. Aggregator impl mismatch disables aggregator only.
  * Live ARM requires a healthy WSS unless ALLOW_HTTP_ONLY_LIVE=true.
  */
-import { makeProvider, makeEventProvider } from './provider.js';
+import { makeProvider, makeEventProvider, wssUrlConfigured } from './provider.js';
 import { getSettings } from './autostate.js';
 import { normalizeSymbol, weiToEthNum } from './swaprules.js';
 import { initAggregator, getAggregatorStatus } from './routes/aggregator.js';
@@ -22,12 +22,7 @@ export function allowHttpOnlyLive() {
   return String(process.env.ALLOW_HTTP_ONLY_LIVE || '').toLowerCase() === 'true';
 }
 
-/** True when a wss:// URL can be constructed from env. */
-export function wssUrlConfigured() {
-  const url = (process.env.ALCHEMY_WSS_URL || '').trim();
-  if (url.startsWith('ws')) return true;
-  return Boolean(process.env.ALCHEMY_KEY);
-}
+export { wssUrlConfigured };
 
 /**
  * Probe WSS: URL present and (unless skipped) a live ping succeeds.
